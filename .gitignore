@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.preview/
+coverage/
+proofshot-artifacts/
+.preview-proof/
+.codex-runtime/
+*.log

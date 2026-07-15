@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="es">
+  <head><title>Consulta Calificaciones Historicas</title></head>
+  <body>
+    <h1>Historico de calificaciones</h1>
+    <table class="sap-layout-table">
+      <tr><td>
+        <section>
+          <h2>Lista de Periodos Academicos</h2>
+          <table>
+            <tr><th></th><th>Codigo</th><th>Ano Academico</th><th>Per. Acad.</th></tr>
+            <tr aria-selected="true"><td></td><td>SYN-P2</td><td>2100</td><td>Periodo reciente</td></tr>
+            <tr><td></td><td>SYN-P1</td><td>2099</td><td>Periodo anterior</td></tr>
+          </table>
+        </section>
+        <section>
+          <h2>Calificaciones del Periodo</h2>
+          <table>
+            <tr>
+              <th>Cod.Asignatura</th><th>Nom. Asignat.</th><th>Simbolo notas</th>
+              <th>Gr. Aprob</th><th>Cr. Cursa</th><th>Puntos</th><th>Comentario</th>
+            </tr>
+            <tr><td>SYN-101</td><td>Materia local</td><td>A</td><td>3</td><td>3</td><td>9</td><td></td></tr>
+            <tr><td>SYN-202</td><td>Laboratorio local</td><td>RE</td><td></td><td>2</td><td>0</td><td>Retirada</td></tr>
+          </table>
+        </section>
+        <section>
+          <h2>Convenciones Utilizadas</h2>
+          <table>
+            <tr><td>RE</td><td>Asignatura Retirada</td></tr>
+            <tr><td>N-1</td><td>Calificacion no computada por N-1</td></tr>
+            <tr><td>MAP</td><td>Mayor Calificacion Aprobada</td></tr>
+            <tr><td>NOP</td><td>Asignatura no Pensum</td></tr>
+          </table>
+        </section>
+      </td></tr>
+    </table>
+  </body>
+</html>
