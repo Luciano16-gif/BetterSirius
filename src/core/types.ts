@@ -96,9 +96,52 @@ export interface AcademicHistoryModel {
 
 export type AcademicHistoryPending = "opening" | "program" | "period";
 
+export type AcademicOfferState = "unavailable" | "initial" | "results" | "empty" | "unknown";
+export type AcademicOfferPending = "opening" | "searching";
+export type AcademicOfferLookupState = "initial" | "results" | "empty" | "unknown";
+export type AcademicOfferLookupPending = "opening" | "searching";
+
+export interface AcademicOfferLookupOption {
+  readonly index: number;
+  readonly code: string;
+  readonly name: string;
+}
+
+export interface AcademicOfferLookupModel {
+  readonly state: AcademicOfferLookupState;
+  readonly options: readonly AcademicOfferLookupOption[];
+  readonly query?: string;
+  readonly pending?: AcademicOfferLookupPending;
+}
+
+export interface AcademicOffering {
+  readonly code: string;
+  readonly name: string;
+  readonly credits?: string;
+  readonly period?: string;
+  readonly block?: string;
+  readonly blockDescription?: string;
+  readonly schedule?: string;
+  readonly schedules?: readonly string[];
+  readonly capacity?: string;
+  readonly prerequisite?: string;
+  readonly prerequisiteCode?: string;
+  readonly modality?: string;
+  readonly firstMonthCost?: string;
+}
+
+export interface AcademicOfferModel {
+  readonly state: AcademicOfferState;
+  readonly offerings: readonly AcademicOffering[];
+  readonly query?: string;
+  readonly pending?: AcademicOfferPending;
+  readonly lookup?: AcademicOfferLookupModel;
+}
+
 export interface ShellModel {
   readonly portalState: Exclude<PortalSurface, "unsupported" | "login">;
   readonly applications: readonly DetectedApplication[];
   readonly academicProcesses: AcademicProcessesModel;
   readonly academicHistory: AcademicHistoryModel;
+  readonly academicOffer: AcademicOfferModel;
 }

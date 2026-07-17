@@ -49,7 +49,10 @@ function detectBySemantics(source: string): SupportedApplication | null {
   if (source.includes("calificaciones historicas") || source.includes("historial academico")) {
     return "historical-grades";
   }
-  if (source.includes("oferta academica")) return "academic-offer";
+  if (source.includes("oferta academica")
+    || source.includes("busqueda codigo de asignatura")
+    || source.includes("busqueda: codigo de asignatura")
+    || source.includes("nombre o codigo de la asignatura")) return "academic-offer";
   if (source.includes("inscripcion 2.0") || source.includes("seleccion del plan de estudio")) {
     return "registration";
   }
@@ -72,7 +75,12 @@ function detectApplicationState(
       return "unknown";
     }
     case "academic-offer":
-      if (document.querySelector("table tbody tr") && text.includes("seccion")) return "results";
+      {
+        const headers = tableHeaders(document);
+        if (headers.some((header) => header === "codigo")
+          && headers.some((header) => header === "asignatura")
+          && headers.some((header) => header === "horario" || header === "cupo")) return "results";
+      }
       if (text.includes("codigo") && text.includes("buscar")) return "initial";
       return "unknown";
     case "registration":

@@ -1,6 +1,8 @@
 import { SHELL_HOST_ID } from "../core/constants";
+import { createResponsiveViewport } from "./responsive-viewport";
 import type { ProgramSelection, ProgramSelectionResult } from "../academic/history";
 import type { ReadOnlyNavigationResult } from "../navigation/academic-navigator";
+import type { AcademicOfferSearchResult } from "../academic/offer";
 import type {
   AcademicProcessGroup,
   AcademicProcessItem,
@@ -9,6 +11,10 @@ import type {
   AcademicHistoryModel,
   AcademicHistoryPeriod,
   AcademicHistoryProgram,
+  AcademicOfferLookupModel,
+  AcademicOfferLookupOption,
+  AcademicOfferModel,
+  AcademicOffering,
   DetectedApplication,
   ShellModel,
   SupportedApplication,
@@ -22,6 +28,14 @@ export interface ShellController {
 export interface ShellOptions {
   readonly onOpenHistoricalGrades?: () => Promise<ReadOnlyNavigationResult>;
   readonly onOpenPeriodGrades?: () => Promise<ReadOnlyNavigationResult>;
+  readonly onOpenAcademicOffer?: () => Promise<ReadOnlyNavigationResult>;
+  readonly onSearchAcademicOffer?: (code: string) => Promise<AcademicOfferSearchResult>;
+  readonly onOpenAcademicOfferLookup?: () => Promise<AcademicOfferSearchResult>;
+  readonly onSearchAcademicOfferLookup?: (query: string) => Promise<AcademicOfferSearchResult>;
+  readonly onSelectAcademicOfferLookup?: (
+    option: AcademicOfferLookupOption,
+  ) => Promise<AcademicOfferSearchResult>;
+  readonly onCloseAcademicOfferLookup?: () => Promise<AcademicOfferSearchResult>;
   readonly onDiscoverHistoricalPrograms?: () => Promise<readonly AcademicHistoryProgram[]>;
   readonly onSelectHistoricalProgram?: (selection: ProgramSelection) => Promise<ProgramSelectionResult>;
   readonly onSetHistoricalWithdrawn?: (enabled: boolean) => Promise<ProgramSelectionResult>;
@@ -58,6 +72,7 @@ export function mountBetterSiriusShell(
   host.dataset.mode = "enhanced";
   const shadow = host.attachShadow({ mode: "open" });
   const previousOverflow = document.body.style.overflow;
+  const responsiveViewport = createResponsiveViewport(document);
 
   shadow.innerHTML = `${styles()}${markup()}`;
   document.documentElement.append(host);
@@ -75,6 +90,7 @@ export function mountBetterSiriusShell(
   let gradeInquiry: GradeInquiryKind = "historical";
 
   const showOriginal = (): void => {
+    responsiveViewport.deactivate();
     host.dataset.mode = "original";
     viewport.hidden = true;
     viewport.style.display = "none";
@@ -86,6 +102,7 @@ export function mountBetterSiriusShell(
   };
 
   const showEnhanced = (): void => {
+    responsiveViewport.activate();
     host.dataset.mode = "enhanced";
     viewport.hidden = false;
     viewport.style.removeProperty("display");
@@ -96,9 +113,12 @@ export function mountBetterSiriusShell(
     document.body.style.overflow = "hidden";
   };
 
+  responsiveViewport.activate();
+
   const showPanel = (view: string, route = view, academicFocus?: string): void => {
     for (const button of navigationTargets) {
-      const active = button.dataset.route === route;
+      const active = button.dataset.route === route
+        || (button.dataset.route === "academic" && ["enrollment", "term", "requests"].includes(route));
       button.classList.toggle("is-active", active);
       button.setAttribute("aria-current", active ? "page" : "false");
     }
@@ -169,6 +189,50 @@ export function mountBetterSiriusShell(
       }
       return;
     }
+    const lookupOption = event.target instanceof Element
+      ? event.target.closest<HTMLButtonElement>("[data-offer-lookup-option]")
+      : null;
+    if (lookupOption) {
+      const index = Number(lookupOption.dataset.offerLookupIndex);
+      const code = lookupOption.dataset.offerLookupCode ?? "";
+      const name = lookupOption.dataset.offerLookupName ?? "";
+      if (Number.isInteger(index) && code && name) {
+        void selectAcademicOfferLookup(
+          lookupOption,
+          { index, code, name },
+          options.onSelectAcademicOfferLookup,
+        );
+      }
+      return;
+    }
+    const lookupClose = event.target instanceof Element
+      ? event.target.closest<HTMLButtonElement>("[data-close-offer-lookup]")
+      : null;
+    if (lookupClose) {
+      void closeAcademicOfferLookup(lookupClose, options.onCloseAcademicOfferLookup);
+      return;
+    }
+    const lookupOpen = event.target instanceof Element
+      ? event.target.closest<HTMLButtonElement>("[data-open-offer-lookup]")
+      : null;
+    if (lookupOpen) {
+      void openAcademicOfferLookup(lookupOpen, options.onOpenAcademicOfferLookup);
+      return;
+    }
+    const offerTarget = event.target instanceof Element
+      ? event.target.closest<HTMLButtonElement>("[data-open-academic-offer]")
+      : null;
+    if (offerTarget) {
+      showPanel("offer", "enrollment");
+      const canReuseCurrentApplication = currentModel.academicOffer.pending !== undefined
+        || currentModel.academicOffer.state === "initial"
+        || currentModel.academicOffer.state === "results"
+        || currentModel.academicOffer.state === "empty";
+      if (!canReuseCurrentApplication) {
+        void openAcademicOffer(shadow, offerTarget, options.onOpenAcademicOffer);
+      }
+      return;
+    }
     const target = event.target instanceof Element
       ? event.target.closest<HTMLButtonElement>("[data-open-history]")
       : null;
@@ -190,6 +254,25 @@ export function mountBetterSiriusShell(
       || currentModel.academicHistory.state === "empty";
     if (context && canReuseCurrentApplication) context.status.hidden = true;
     else if (context) void openGradeInquiry(context, action, gradeInquiry);
+  });
+  shadow.addEventListener("submit", (event) => {
+    const lookupForm = event.target instanceof HTMLFormElement
+      && event.target.matches("[data-offer-lookup-form]")
+      ? event.target
+      : null;
+    if (lookupForm) {
+      event.preventDefault();
+      const query = String(new FormData(lookupForm).get("lookup-query") ?? "");
+      void searchAcademicOfferLookup(lookupForm, query, options.onSearchAcademicOfferLookup);
+      return;
+    }
+    const form = event.target instanceof HTMLFormElement && event.target.matches("[data-offer-search-form]")
+      ? event.target
+      : null;
+    if (!form) return;
+    event.preventDefault();
+    const code = String(new FormData(form).get("course-code") ?? "");
+    void searchAcademicOffer(form, code, options.onSearchAcademicOffer);
   });
   shadow.addEventListener("change", (event) => {
     const withdrawn = event.target instanceof HTMLInputElement && event.target.matches("[data-history-withdrawn]")
@@ -213,6 +296,7 @@ export function mountBetterSiriusShell(
   return {
     update,
     dispose(): void {
+      responsiveViewport.dispose();
       document.body.style.overflow = previousOverflow;
       host.remove();
     },
@@ -367,6 +451,154 @@ async function openGradeInquiry(
   context.button.disabled = false;
 }
 
+async function openAcademicOffer(
+  root: ShadowRoot,
+  button: HTMLButtonElement,
+  action: ShellOptions["onOpenAcademicOffer"],
+): Promise<void> {
+  const status = root.querySelector<HTMLElement>("[data-offer-action-status]");
+  button.disabled = true;
+  if (status) {
+    status.hidden = false;
+    status.textContent = "Abriendo Oferta Académica…";
+  }
+  const result = action ? await action() : "not-found";
+  if (result === "activated") {
+    if (status) {
+      status.hidden = true;
+      status.textContent = "";
+    }
+    return;
+  }
+
+  const messages: Readonly<Record<Exclude<ReadOnlyNavigationResult, "activated">, string>> = {
+    "not-found": "No encontré Oferta Académica en la navegación actual.",
+    ambiguous: "Sirius mostró más de un acceso posible y la operación fue detenida.",
+    busy: "Ya hay una navegación en curso.",
+  };
+  if (status) status.textContent = messages[result];
+  button.disabled = false;
+}
+
+async function searchAcademicOffer(
+  form: HTMLFormElement,
+  code: string,
+  action: ShellOptions["onSearchAcademicOffer"],
+): Promise<void> {
+  const input = form.querySelector<HTMLInputElement>("input[name='course-code']");
+  const button = form.querySelector<HTMLButtonElement>("button[type='submit']");
+  const status = form.querySelector<HTMLElement>("[data-offer-search-status]");
+  if (!input || !button || !status) return;
+
+  const normalizedCode = code.trim().toLocaleUpperCase("es");
+  if (!normalizedCode || normalizedCode.length > 12) {
+    status.hidden = false;
+    status.textContent = "Escribe un código de asignatura de hasta 12 caracteres.";
+    input.focus();
+    return;
+  }
+
+  input.disabled = true;
+  button.disabled = true;
+  status.hidden = false;
+  status.textContent = `Buscando ${normalizedCode} en Sirius…`;
+  const result = action ? await action(normalizedCode) : "not-found";
+  if (result === "activated") return;
+  if (!form.isConnected) return;
+
+  const messages: Readonly<Record<Exclude<AcademicOfferSearchResult, "activated">, string>> = {
+    invalid: "El código no es válido.",
+    "not-found": "La pantalla de Oferta Académica cambió. Vuelve a abrirla e intenta nuevamente.",
+    busy: "Ya hay una búsqueda en curso.",
+  };
+  input.disabled = false;
+  button.disabled = false;
+  status.textContent = messages[result];
+}
+
+async function openAcademicOfferLookup(
+  button: HTMLButtonElement,
+  action: ShellOptions["onOpenAcademicOfferLookup"],
+): Promise<void> {
+  const status = button.closest("form")?.querySelector<HTMLElement>("[data-offer-search-status]");
+  button.disabled = true;
+  if (status) {
+    status.hidden = false;
+    status.textContent = "Abriendo el buscador de asignaturas…";
+  }
+  const result = action ? await action() : "not-found";
+  if (result === "activated" || !button.isConnected) return;
+  button.disabled = false;
+  if (status) {
+    status.textContent = result === "busy"
+      ? "Ya hay una consulta en curso."
+      : "Sirius no mostró el selector de asignaturas.";
+  }
+}
+
+async function searchAcademicOfferLookup(
+  form: HTMLFormElement,
+  rawQuery: string,
+  action: ShellOptions["onSearchAcademicOfferLookup"],
+): Promise<void> {
+  const input = form.querySelector<HTMLInputElement>("input[name='lookup-query']");
+  const button = form.querySelector<HTMLButtonElement>("button[type='submit']");
+  const status = form.querySelector<HTMLElement>("[data-offer-lookup-status]");
+  if (!input || !button || !status) return;
+  const query = rawQuery.replace(/\s+/g, " ").trim();
+  if (query.length < 2 || query.length > 20) {
+    status.hidden = false;
+    status.textContent = "Escribe entre 2 y 20 caracteres.";
+    input.focus();
+    return;
+  }
+
+  input.disabled = true;
+  button.disabled = true;
+  status.hidden = false;
+  status.textContent = `Buscando “${query}” en Sirius…`;
+  const result = action ? await action(query) : "not-found";
+  if (result === "activated" || !form.isConnected) return;
+  input.disabled = false;
+  button.disabled = false;
+  status.textContent = result === "busy"
+    ? "Ya hay una consulta en curso."
+    : result === "invalid"
+      ? "El criterio no es válido."
+      : "La ayuda de búsqueda de Sirius cambió o dejó de estar disponible.";
+}
+
+async function selectAcademicOfferLookup(
+  button: HTMLButtonElement,
+  option: AcademicOfferLookupOption,
+  action: ShellOptions["onSelectAcademicOfferLookup"],
+): Promise<void> {
+  const status = button.closest("[data-offer-lookup]")
+    ?.querySelector<HTMLElement>("[data-offer-lookup-status]");
+  button.disabled = true;
+  if (status) {
+    status.hidden = false;
+    status.textContent = `Consultando las secciones de ${option.code}…`;
+  }
+  const result = action ? await action(option) : "not-found";
+  if (result === "activated" || !button.isConnected) return;
+  button.disabled = false;
+  if (status) {
+    status.textContent = result === "busy"
+      ? "Ya hay una consulta en curso."
+      : "No pude seleccionar esa asignatura de forma segura.";
+  }
+}
+
+async function closeAcademicOfferLookup(
+  button: HTMLButtonElement,
+  action: ShellOptions["onCloseAcademicOfferLookup"],
+): Promise<void> {
+  button.disabled = true;
+  const result = action ? await action() : "not-found";
+  if (result !== "activated" && button.isConnected) button.disabled = false;
+}
+
 function renderModel(root: ShadowRoot, model: ShellModel, inquiry: GradeInquiryKind): void {
   const status = portalStatus(model.portalState);
   requiredElement(root, "[data-status-title]").textContent = status.title;
@@ -399,6 +631,7 @@ function renderModel(root: ShadowRoot, model: ShellModel, inquiry: GradeInquiryK
 
   renderAcademicProcesses(root, model.academicProcesses);
   renderAcademicHistory(root, model.academicHistory, inquiry);
+  renderAcademicOffer(root, model.academicOffer);
 }
 
 function renderAcademicHistory(
@@ -565,6 +798,226 @@ function historyCourseMarkup(course: AcademicHistoryCourse): string {
   </tr>`;
 }
 
+function renderAcademicOffer(root: ShadowRoot, model: AcademicOfferModel): void {
+  for (const counter of root.querySelectorAll<HTMLElement>("[data-offer-count]")) {
+    counter.textContent = model.state === "results" || model.state === "empty"
+      ? String(model.offerings.length).padStart(2, "0")
+      : "—";
+  }
+  const container = requiredElement<HTMLElement>(root, "[data-offer-view]");
+  if (model.pending === "opening") {
+    container.innerHTML = offerLoadingMarkup(model.pending, model.query);
+    return;
+  }
+
+  const search = offerSearchMarkup(model.query, model.lookup);
+  const lookup = offerLookupMarkup(model.lookup);
+  if (model.pending === "searching") {
+    container.innerHTML = `${search}${offerLoadingMarkup(model.pending, model.query, true)}${lookup}`;
+    return;
+  }
+
+  if (model.state === "results") {
+    container.innerHTML = `
+      ${search}
+      <div class="offer-result-heading">
+        <div><span class="eyebrow">Resultado</span><h2>${escapeHtml(model.offerings[0]?.name ?? "Oferta encontrada")}</h2></div>
+        <span><strong>${model.offerings.length}</strong> ${model.offerings.length === 1 ? "sección" : "secciones"}</span>
+      </div>
+      <div class="offer-list">${model.offerings.map(academicOfferingMarkup).join("")}</div>
+      ${lookup}`;
+    return;
+  }
+
+  if (model.state === "empty") {
+    container.innerHTML = `
+      ${search}
+      <div class="offer-empty">
+        <span class="empty-rule"></span>
+        <h2>No hay oferta para ese código</h2>
+        <p>Sirius respondió sin secciones disponibles. Prueba con otro código.</p>
+      </div>
+      ${lookup}`;
+    return;
+  }
+
+  if (model.state === "initial") {
+    container.innerHTML = `
+      ${search}
+      ${model.lookup ? "" : `
+        <div class="offer-empty compact">
+          <span class="empty-rule"></span>
+          <h2>Busca una asignatura</h2>
+          <p>Usa el código exacto o abre el buscador para encontrarla por nombre o prefijo.</p>
+        </div>`}
+      ${lookup}`;
+    return;
+  }
+
+  const unknown = model.state === "unknown";
+  container.innerHTML = `
+    <div class="offer-empty">
+      <span class="empty-rule"></span>
+      <h2>${unknown ? "No pude interpretar la respuesta" : "Oferta Académica no está abierta"}</h2>
+      <p>${unknown
+        ? "La estructura de Sirius no coincide con el formato verificado."
+        : "Abre la consulta directamente desde BetterSirius."}</p>
+      <button class="primary-action" type="button" data-open-academic-offer>
+        ${unknown ? "Volver a abrir" : "Abrir Oferta Académica"} ${ICONS.arrow}
+      </button>
+    </div>`;
+}
+
+function offerSearchMarkup(query = "", lookup?: AcademicOfferLookupModel): string {
+  return `
+    <form class="offer-search" data-offer-search-form novalidate>
+      <label for="better-sirius-offer-code">Código de asignatura</label>
+      <div class="offer-search-row">
+        <input id="better-sirius-offer-code" name="course-code" type="text" maxlength="12"
+          value="${escapeHtml(query)}" autocomplete="off" autocapitalize="characters" spellcheck="false"
+          placeholder="Ej. FBMT002">
+        <button class="primary-action" type="submit">Buscar ${ICONS.arrow}</button>
+      </div>
+      <div class="offer-search-alternative">
+        <span>¿No conoces el código exacto?</span>
+        <button type="button" data-open-offer-lookup ${lookup ? "disabled" : ""}>
+          ${lookup ? "Buscador abierto" : "Buscar por nombre o prefijo"} ${ICONS.arrow}
+        </button>
+      </div>
+      <p data-offer-search-status role="status" hidden></p>
+    </form>`;
+}
+
+function offerLookupMarkup(lookup?: AcademicOfferLookupModel): string {
+  if (!lookup) return "";
+  const query = lookup.query ?? "";
+  const body = lookup.pending === "opening"
+    ? `<div class="offer-lookup-loading" role="status"><span></span><span></span><span></span></div>`
+    : lookup.pending === "searching"
+      ? `<div class="offer-lookup-loading" role="status" aria-label="Buscando asignaturas"><span></span><span></span><span></span></div>`
+      : lookup.state === "results"
+        ? `<div class="offer-lookup-results">
+            <div class="offer-lookup-summary"><strong>${lookup.options.length}</strong><span>${lookup.options.length === 1 ? "asignatura" : "asignaturas"}</span></div>
+            <div class="offer-lookup-list">${lookup.options.map(academicOfferLookupOptionMarkup).join("")}</div>
+          </div>`
+        : lookup.state === "empty"
+          ? `<div class="offer-lookup-empty"><strong>Sin coincidencias</strong><p>Prueba con parte del nombre o con un prefijo como FGE.</p></div>`
+          : lookup.state === "unknown"
+            ? `<div class="offer-lookup-empty"><strong>No pude leer el selector</strong><p>Cierra esta búsqueda y vuelve a abrirla.</p></div>`
+            : `<div class="offer-lookup-empty"><strong>Busca por nombre o prefijo</strong><p>Ejemplos: Psicología positiva, Matemática o FGE.</p></div>`;
+  return `
+    <section class="offer-lookup" data-offer-lookup>
+      <header>
+        <div><span class="eyebrow">Selector de asignaturas</span><h2>Buscar por nombre o código</h2></div>
+        <button type="button" data-close-offer-lookup aria-label="Cerrar selector">Cerrar</button>
+      </header>
+      <form data-offer-lookup-form novalidate>
+        <label for="better-sirius-offer-lookup">Nombre, código o prefijo</label>
+        <div class="offer-lookup-search-row">
+          <input id="better-sirius-offer-lookup" name="lookup-query" type="search" minlength="2" maxlength="20"
+            value="${escapeHtml(query)}" autocomplete="off" spellcheck="false"
+            placeholder="Ej. Psicología positiva o FGE">
+          <button class="primary-action" type="submit">Buscar ${ICONS.arrow}</button>
+        </div>
+        <p data-offer-lookup-status role="status" hidden></p>
+      </form>
+      ${body}
+    </section>`;
+}
+
+function academicOfferLookupOptionMarkup(option: AcademicOfferLookupOption): string {
+  return `
+    <article class="offer-lookup-option">
+      <div><span>${escapeHtml(option.code)}</span><h3>${escapeHtml(option.name)}</h3></div>
+      <button type="button" data-offer-lookup-option
+        data-offer-lookup-index="${option.index}"
+        data-offer-lookup-code="${escapeHtml(option.code)}"
+        data-offer-lookup-name="${escapeHtml(option.name)}">
+        Ver secciones ${ICONS.arrow}
+      </button>
+    </article>`;
+}
+
+function offerLoadingMarkup(
+  pending: NonNullable<AcademicOfferModel["pending"]>,
+  query?: string,
+  inline = false,
+): string {
+  const title = pending === "opening"
+    ? "Abriendo Oferta Académica"
+    : `Buscando ${escapeHtml(query ?? "la asignatura")}`;
+  return `
+    <div class="offer-loading${inline ? " inline" : ""}" role="status" aria-live="polite">
+      <div><span class="loading-rule"></span><h2>${title}</h2><p>Esperando la respuesta de Sirius.</p></div>
+      <div class="offer-skeleton" aria-hidden="true"><span></span><span></span><span></span></div>
+    </div>`;
+}
+
+function academicOfferingMarkup(offering: AcademicOffering): string {
+  const sectionIdentity = offering.block || offering.blockDescription || "";
+  const blockLabel = academicSectionLabel(sectionIdentity, offering.blockDescription);
+  const schedules = offering.schedules?.length
+    ? offering.schedules
+    : offering.schedule
+      ? [offering.schedule]
+      : [];
+  return `
+    <article class="offer-row">
+      <header>
+        <div><span class="offer-code">${escapeHtml(offering.code)}</span><h3>${escapeHtml(blockLabel)}</h3></div>
+        <div class="offer-tags">
+          ${sectionIdentity ? `<span class="offer-section-code">${escapeHtml(sectionIdentity)}</span>` : ""}
+          ${offering.modality ? `<span class="offer-modality">${escapeHtml(offering.modality)}</span>` : ""}
+        </div>
+      </header>
+      <div class="offer-primary-data">
+        <div class="offer-schedule-data"><span>Horario</span>${academicSchedulesMarkup(schedules)}</div>
+        <div><span>Cupo</span><strong>${escapeHtml(offering.capacity ?? "—")}</strong></div>
+        <div><span>Período</span><strong>${escapeHtml(offering.period ?? "—")}</strong></div>
+        <div><span>Créditos</span><strong>${escapeHtml(offering.credits ?? "—")}</strong></div>
+      </div>
+      <details class="offer-details">
+        <summary>Prerrequisitos y costo ${ICONS.arrow}</summary>
+        <dl>
+          <div><dt>Prerrequisito</dt><dd>${escapeHtml(offering.prerequisite ?? "Ninguno indicado")}</dd></div>
+          <div><dt>Código</dt><dd>${escapeHtml(offering.prerequisiteCode ?? "—")}</dd></div>
+          <div><dt>Costo primer mes</dt><dd>${escapeHtml(offering.firstMonthCost ?? "—")}</dd></div>
+        </dl>
+      </details>
+    </article>`;
+}
+
+function academicSectionLabel(identity: string, description?: string): string {
+  const suffix = identity.match(/-(\d+)$/)?.[1] ?? identity.match(/^0*(\d+)$/)?.[1];
+  if (suffix) return `Sección ${Number(suffix)}`;
+  return description || identity || "Sección";
+}
+
+function academicSchedulesMarkup(schedules: readonly string[]): string {
+  if (schedules.length === 0) return "<strong>Por definir</strong>";
+  return `<ul class="offer-meetings">${schedules.map((schedule) => {
+    const meeting = splitAcademicSchedule(schedule);
+    return `<li><span>${escapeHtml(meeting.day)}</span><strong>${escapeHtml(meeting.time)}</strong></li>`;
+  }).join("")}</ul>`;
+}
+
+function splitAcademicSchedule(schedule: string): { readonly day: string; readonly time: string } {
+  const match = schedule.trim().match(/^([A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{2,3})(?:\s*[-–]\s*|\s+)(\d{1,2}:\d{2}.*)$/);
+  if (!match) return { day: "Horario", time: schedule };
+  const key = match[1]!.toLocaleLowerCase("es");
+  const days: Readonly<Record<string, string>> = {
+    lu: "Lunes",
+    ma: "Martes",
+    mi: "Miércoles",
+    ju: "Jueves",
+    vi: "Viernes",
+    sa: "Sábado",
+    sá: "Sábado",
+    do: "Domingo",
+  };
+  return { day: days[key] ?? match[1]!, time: match[2]! };
+}
+
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (character) => ({
     "&": "&amp;",
@@ -619,13 +1072,16 @@ function academicGroupMarkup(group: AcademicProcessGroup): string {
 function academicProcessMarkup(process: AcademicProcessItem): string {
   const isHistory = process.id === "historical-grades";
   const isPeriodGrades = process.id === "period-grades";
-  const isAction = isHistory || isPeriodGrades;
+  const isAcademicOffer = process.id === "academic-offer";
+  const isAction = isHistory || isPeriodGrades || isAcademicOffer;
   const element = isAction ? "button" : "article";
   const attributes = isHistory
     ? 'type="button" data-open-history'
     : isPeriodGrades
       ? 'type="button" data-open-period-grades'
-      : 'aria-disabled="true"';
+      : isAcademicOffer
+        ? 'type="button" data-open-academic-offer'
+        : 'aria-disabled="true"';
   return `
     <${element} class="process-row ${isAction ? "process-row-action" : ""}" ${attributes}>
       <h3>${escapeHtml(process.label)}</h3>
@@ -735,6 +1191,16 @@ function markup(): string {
           <div class="page-heading history-heading"><h1 data-history-title>Consulta Calificaciones Históricas</h1><div class="page-count"><strong data-history-count>—</strong><span>materias</span></div></div>
           <p class="action-status" data-history-action-status role="status" hidden></p>
           <div data-history-view></div>
+        </section>
+
+        <section class="panel" data-panel="offer" hidden>
+          <div class="breadcrumb">Procesos Académicos <span>/</span> Pregrado <span>/</span> Matrícula Pregrado</div>
+          <div class="page-heading offer-heading">
+            <div><span class="eyebrow">Consulta</span><h1>Oferta Académica</h1></div>
+            <div class="page-count"><strong data-offer-count>—</strong><span>secciones</span></div>
+          </div>
+          <p class="action-status" data-offer-action-status role="status" hidden></p>
+          <div data-offer-view></div>
         </section>
 
         <section class="panel" data-panel="academic" hidden>
@@ -875,6 +1341,91 @@ function styles(): string {
     .history-skeleton span:nth-child(1) { width: 88%; }
     .history-skeleton span:nth-child(2) { width: 100%; }
     .history-skeleton span:nth-child(3) { width: 68%; }
+    .offer-heading { display: flex; align-items: end; justify-content: space-between; gap: 30px; border-bottom: 2px solid var(--blue); }
+    .offer-heading h1 { margin-bottom: 0; }
+    .offer-search { padding: 26px 0 28px; border-bottom: 1px solid var(--line); }
+    .offer-search > label { display: block; margin-bottom: 8px; color: var(--blue); font-size: 11px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
+    .offer-search-row { display: grid; grid-template-columns: minmax(220px, 390px) max-content; gap: 10px; align-items: stretch; }
+    .offer-search-row .primary-action { min-height: 44px; }
+    .offer-search input { min-width: 0; min-height: 44px; padding: 0 14px; border: 1px solid #cbd6e4; border-radius: 9px; outline: 0; color: var(--ink); background: #fff; font: inherit; font-size: 15px; font-weight: 720; letter-spacing: .04em; text-transform: uppercase; transition: border-color .2s ease, box-shadow .2s ease; }
+    .offer-search input:focus { border-color: var(--accent-strong); box-shadow: 0 0 0 3px rgba(246,134,41,.16); }
+    .offer-search input:disabled { color: var(--muted); background: #edf1f6; }
+    .offer-search [data-offer-search-status] { margin: 10px 0 0; color: var(--blue); font-size: 12px; font-weight: 650; }
+    .offer-search [data-offer-search-status][hidden] { display: none; }
+    .offer-search-alternative { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+    .offer-search-alternative > span { color: var(--muted); font-size: 11px; }
+    .offer-search-alternative button { display: inline-flex; align-items: center; gap: 5px; padding: 0; border: 0; color: var(--blue); background: transparent; font: inherit; font-size: 11px; font-weight: 760; cursor: pointer; }
+    .offer-search-alternative button svg { width: 13px; fill: none; stroke: currentColor; stroke-width: 1.8; }
+    .offer-search-alternative button:disabled { color: var(--muted); cursor: default; }
+    .offer-lookup { margin-top: 28px; padding: 24px 0 26px; border-top: 2px solid var(--accent-strong); border-bottom: 1px solid var(--line); }
+    .offer-lookup > header { display: flex; align-items: start; justify-content: space-between; gap: 24px; }
+    .offer-lookup > header h2 { margin: 5px 0 0; color: var(--ink); font-size: 24px; letter-spacing: -.03em; }
+    .offer-lookup > header > button { padding: 5px 0; border: 0; color: var(--blue); background: transparent; font: inherit; font-size: 11px; font-weight: 760; cursor: pointer; }
+    .offer-lookup > form { max-width: 760px; padding: 22px 0 18px; }
+    .offer-lookup > form > label { display: block; margin-bottom: 8px; color: var(--blue); font-size: 11px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
+    .offer-lookup-search-row { display: grid; grid-template-columns: minmax(240px, 1fr) max-content; gap: 10px; }
+    .offer-lookup-search-row input { min-width: 0; min-height: 44px; padding: 0 14px; border: 1px solid #cbd6e4; border-radius: 9px; outline: 0; color: var(--ink); background: #fff; font: inherit; font-size: 14px; transition: border-color .2s ease, box-shadow .2s ease; }
+    .offer-lookup-search-row input:focus { border-color: var(--accent-strong); box-shadow: 0 0 0 3px rgba(246,134,41,.16); }
+    .offer-lookup [data-offer-lookup-status] { margin: 10px 0 0; color: var(--blue); font-size: 12px; font-weight: 650; }
+    .offer-lookup [data-offer-lookup-status][hidden] { display: none; }
+    .offer-lookup-summary { display: flex; align-items: baseline; gap: 7px; padding: 5px 0 13px; color: var(--muted); font-size: 11px; }
+    .offer-lookup-summary strong { color: var(--blue); font-size: 20px; }
+    .offer-lookup-list { border-top: 1px solid var(--blue); }
+    .offer-lookup-option { display: grid; grid-template-columns: minmax(0, 1fr) max-content; gap: 20px; align-items: center; padding: 16px 0; border-bottom: 1px solid var(--line); }
+    .offer-lookup-option span { color: var(--accent-deep); font-family: ui-monospace, "Cascadia Mono", monospace; font-size: 10px; font-weight: 820; letter-spacing: .06em; }
+    .offer-lookup-option h3 { margin: 4px 0 0; color: var(--ink); font-size: 14px; line-height: 1.35; }
+    .offer-lookup-option button { display: inline-flex; align-items: center; gap: 5px; padding: 8px 0 8px 12px; border: 0; color: var(--blue); background: transparent; font: inherit; font-size: 11px; font-weight: 780; cursor: pointer; }
+    .offer-lookup-option button svg { width: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; }
+    .offer-lookup-option button:active { transform: translateY(1px); }
+    .offer-lookup-empty { min-height: 90px; padding: 20px 0 4px; }
+    .offer-lookup-empty strong { color: var(--ink); font-size: 15px; }
+    .offer-lookup-empty p { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
+    .offer-lookup-loading { display: grid; gap: 10px; padding: 18px 0 4px; }
+    .offer-lookup-loading span { display: block; height: 17px; border-radius: 4px; background: #e6ebf2; }
+    .offer-lookup-loading span:nth-child(1) { width: 46%; }
+    .offer-lookup-loading span:nth-child(2) { width: 82%; }
+    .offer-lookup-loading span:nth-child(3) { width: 64%; }
+    .offer-result-heading { display: flex; align-items: end; justify-content: space-between; gap: 24px; padding: 34px 0 20px; }
+    .offer-result-heading h2 { margin: 7px 0 0; color: var(--ink); font-size: 26px; letter-spacing: -.035em; }
+    .offer-result-heading > span { color: var(--muted); font-size: 11px; }
+    .offer-result-heading > span strong { color: var(--blue); font-size: 24px; }
+    .offer-list { border-top: 2px solid var(--blue); }
+    .offer-row { padding: 24px 2px 0; border-bottom: 1px solid var(--line); }
+    .offer-row > header { display: flex; align-items: start; justify-content: space-between; gap: 20px; }
+    .offer-code { color: var(--accent-strong); font-family: ui-monospace, "Cascadia Mono", monospace; font-size: 10px; font-weight: 800; letter-spacing: .06em; }
+    .offer-row h3 { margin: 5px 0 0; color: var(--blue); font-size: 17px; letter-spacing: -.02em; }
+    .offer-tags { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 7px; }
+    .offer-section-code { padding: 6px 9px; border: 1px solid #cdd9e9; border-radius: 999px; color: var(--blue); font-family: ui-monospace, "Cascadia Mono", monospace; font-size: 9px; font-weight: 760; letter-spacing: .03em; }
+    .offer-modality { padding: 6px 9px; border-radius: 999px; color: var(--blue); background: var(--blue-soft); font-size: 10px; font-weight: 760; }
+    .offer-primary-data { display: grid; grid-template-columns: minmax(280px, 2fr) repeat(3, minmax(90px, .6fr)); margin-top: 22px; padding-bottom: 20px; }
+    .offer-primary-data > div { min-width: 0; padding: 0 18px; border-left: 1px solid var(--line); }
+    .offer-primary-data > div:first-child { padding-left: 0; border-left: 0; }
+    .offer-primary-data > div > span, .offer-details dt { display: block; margin-bottom: 6px; color: var(--muted); font-size: 9px; font-weight: 760; letter-spacing: .07em; text-transform: uppercase; }
+    .offer-primary-data > div > strong { display: block; color: var(--ink); font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
+    .offer-meetings { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 7px 18px; margin: 0; padding: 0; list-style: none; }
+    .offer-meetings li { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 8px; align-items: baseline; min-width: 0; padding: 5px 0; border-bottom: 1px solid #e3e9f1; }
+    .offer-meetings li span { color: var(--blue); font-size: 11px; font-weight: 760; }
+    .offer-meetings li strong { color: var(--ink); font-family: ui-monospace, "Cascadia Mono", monospace; font-size: 11px; font-weight: 680; overflow-wrap: anywhere; }
+    .offer-details { border-top: 1px solid var(--line); }
+    .offer-details summary { display: flex; align-items: center; gap: 7px; width: max-content; padding: 12px 0 15px; color: var(--blue); font-size: 11px; font-weight: 700; cursor: pointer; list-style: none; }
+    .offer-details summary::-webkit-details-marker { display: none; }
+    .offer-details summary svg { width: 14px; transform: rotate(90deg); transition: transform .2s ease; }
+    .offer-details[open] summary svg { transform: rotate(-90deg); }
+    .offer-details dl { display: grid; grid-template-columns: 1.4fr .7fr .8fr; gap: 22px; margin: 0; padding: 2px 0 22px; }
+    .offer-details dd { margin: 0; color: var(--ink); font-size: 12px; line-height: 1.45; }
+    .offer-empty { min-height: 190px; padding: 42px 0; border-bottom: 1px solid var(--line); }
+    .offer-empty.compact { min-height: 150px; }
+    .offer-empty h2 { margin-bottom: 8px; font-size: 24px; }
+    .offer-empty p { max-width: 590px; margin-bottom: 16px; color: var(--muted); font-size: 13px; line-height: 1.55; }
+    .offer-loading { display: grid; grid-template-columns: minmax(0,1fr) minmax(230px,.7fr); gap: 42px; align-items: center; min-height: 280px; padding: 42px 0; border-bottom: 1px solid var(--line); }
+    .offer-loading.inline { min-height: 190px; padding: 34px 0; }
+    .offer-loading h2 { margin-bottom: 8px; font-size: 24px; }
+    .offer-loading p { margin: 0; color: var(--muted); font-size: 13px; }
+    .offer-skeleton { display: grid; gap: 11px; }
+    .offer-skeleton span { display: block; height: 18px; border-radius: 4px; background: #e6ebf2; }
+    .offer-skeleton span:nth-child(1) { width: 72%; }
+    .offer-skeleton span:nth-child(2) { width: 100%; }
+    .offer-skeleton span:nth-child(3) { width: 84%; }
     .withdrawn-control { display: flex; align-items: center; gap: 14px; max-width: 680px; padding: 11px 0 16px; }
     .withdrawn-control label { display: inline-flex; align-items: center; gap: 9px; color: var(--ink); font-size: 13px; font-weight: 700; cursor: pointer; }
     .withdrawn-control input { width: 17px; height: 17px; margin: 0; accent-color: var(--accent-strong); cursor: pointer; }
@@ -951,8 +1502,9 @@ function styles(): string {
     .return-button[hidden] { display: none; }
     @keyframes enter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
     @media (max-width: 760px) {
-      .viewport { display: block; padding-bottom: 72px; }
-      .sidebar { position: fixed; inset: auto 0 0; min-height: 0; height: 68px; padding: 7px 14px calc(7px + env(safe-area-inset-bottom)); z-index: 3; }
+      :host { max-width: 100vw; }
+      .viewport { display: block; padding-bottom: 0; }
+      .sidebar { position: fixed; inset: auto 0 0; min-height: 0; height: calc(68px + env(safe-area-inset-bottom)); padding: 7px 14px calc(7px + env(safe-area-inset-bottom)); z-index: 3; }
       .brand { display: none; }
       .navigation { grid-template-columns: repeat(2, 1fr); gap: 4px; margin: 0; }
       .nav-section { display: contents; }
@@ -960,9 +1512,10 @@ function styles(): string {
       .nav-label-wide { display: none; }
       .nav-label-mobile { display: inline; }
       .nav-item { flex-direction: column; justify-content: center; gap: 2px; padding: 5px; font-size: 10px; }
+      .nav-item.is-active { box-shadow: inset 3px 0 0 var(--accent), inset -3px 0 0 var(--accent); }
       .nav-item svg { width: 19px; height: 19px; }
-      .content { height: calc(100dvh - 68px); }
-      .topbar { min-height: 62px; padding: 11px 17px; }
+      .content { height: calc(100dvh - 68px - env(safe-area-inset-bottom)); }
+      .topbar { min-height: 62px; padding: max(11px, env(safe-area-inset-top)) 17px 11px; }
       .context-label { display: none; }
       .original-button span { display: none; }
       .original-button { padding: 9px; }
@@ -982,6 +1535,29 @@ function styles(): string {
       .home-actions button:first-child { border-right: 0; }
       .history-heading { align-items: flex-start; flex-direction: column; gap: 6px; }
       .history-heading h1 { max-width: 100%; font-size: 34px; line-height: 1.02; overflow-wrap: anywhere; }
+      .offer-heading { align-items: flex-start; flex-direction: column; gap: 6px; }
+      .offer-heading h1 { max-width: 100%; font-size: 36px; line-height: 1.02; }
+      .offer-search { padding-top: 21px; }
+      .offer-search-row { grid-template-columns: 1fr; }
+      .offer-search-row .primary-action { justify-content: center; width: 100%; }
+      .offer-search-alternative { align-items: flex-start; flex-direction: column; gap: 7px; }
+      .offer-lookup { margin-top: 22px; padding-top: 20px; }
+      .offer-lookup > header h2 { font-size: 21px; }
+      .offer-lookup-search-row { grid-template-columns: 1fr; }
+      .offer-lookup-search-row .primary-action { justify-content: center; width: 100%; }
+      .offer-lookup-option { grid-template-columns: 1fr; gap: 8px; }
+      .offer-lookup-option button { justify-content: space-between; width: 100%; padding: 7px 0; }
+      .offer-result-heading { align-items: flex-start; flex-direction: column; gap: 10px; }
+      .offer-result-heading h2 { font-size: 22px; }
+      .offer-row { padding-top: 20px; }
+      .offer-row > header { align-items: flex-start; flex-direction: column; gap: 12px; }
+      .offer-tags { justify-content: flex-start; }
+      .offer-primary-data { grid-template-columns: 1fr 1fr; gap: 20px 14px; }
+      .offer-primary-data > div { padding: 0; border-left: 0; }
+      .offer-primary-data > div:first-child { grid-column: 1 / -1; }
+      .offer-meetings { grid-template-columns: 1fr; gap: 0; }
+      .offer-details dl { grid-template-columns: 1fr; gap: 17px; }
+      .offer-loading { grid-template-columns: 1fr; gap: 28px; min-height: 300px; }
       .breadcrumb { line-height: 1.5; }
       .page-count { padding-bottom: 12px; }
       .period-picker { grid-template-columns: 1fr; padding: 20px 0 16px; }
@@ -1006,6 +1582,15 @@ function styles(): string {
       .safety-list > div { grid-template-columns: 35px 1fr; gap: 13px; }
       .safety-list p { grid-column: 2; }
       .return-button span { display: inline; }
+    }
+    @media (max-width: 430px) {
+      .panel { padding-inline: 15px; }
+      .history-table tr { grid-template-columns: 1fr; gap: 0; }
+      .history-table td, .history-table td:first-child { grid-column: 1; }
+      .offer-primary-data { grid-template-columns: 1fr; }
+      .offer-primary-data > div:first-child { grid-column: 1; }
+      .process-row { grid-template-columns: 1fr; }
+      .process-meta { grid-column: 1; }
     }
     @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; } }
   </style>`;

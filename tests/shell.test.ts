@@ -12,6 +12,7 @@ const readyModel: ShellModel = {
     state: "results",
     courses: [{ period: "2026-S1", code: "SYN-204", name: "Materia sintética", grade: "A", approvedCredits: "4" }],
   },
+  academicOffer: { state: "initial", offerings: [] },
 };
 
 afterEach(() => {
@@ -27,7 +28,7 @@ describe("responsive shell", () => {
     expect(document.getElementById("sap-original")).not.toBeNull();
     expect(host?.shadowRoot?.textContent).toContain("Procesos Académicos");
     expect(host?.shadowRoot?.querySelector(".navigation")?.textContent).not.toContain("Historial");
-    expect(host?.shadowRoot?.querySelector("form")).toBeNull();
+    expect(host?.shadowRoot?.querySelector("[data-panel='home'] form")).toBeNull();
     controller.dispose();
   });
 
@@ -38,6 +39,10 @@ describe("responsive shell", () => {
     const returnButton = host.shadowRoot?.querySelector<HTMLButtonElement>(".return-button");
     const viewport = host.shadowRoot?.querySelector<HTMLElement>(".viewport");
 
+    expect(document.querySelector('meta[name="viewport"]')?.getAttribute("content")).toBe(
+      "width=device-width, initial-scale=1, viewport-fit=cover",
+    );
+
     originalButton?.click();
     expect(host.dataset.mode).toBe("original");
     expect(returnButton?.hidden).toBe(false);
@@ -45,6 +50,7 @@ describe("responsive shell", () => {
     expect(viewport?.style.display).toBe("none");
     expect(host.style.width).toBe("max-content");
     expect(host.style.height).toBe("max-content");
+    expect(document.querySelector('meta[name="viewport"]')).toBeNull();
 
     returnButton?.click();
     expect(host.dataset.mode).toBe("enhanced");
@@ -52,7 +58,9 @@ describe("responsive shell", () => {
     expect(viewport?.style.display).toBe("");
     expect(host.style.width).toBe("");
     expect(host.style.height).toBe("");
+    expect(document.querySelector('meta[name="viewport"]')).not.toBeNull();
     controller.dispose();
+    expect(document.querySelector('meta[name="viewport"]')).toBeNull();
   });
 
   it("uses a blue-led UNIMET palette with orange accents without recreating its logo", () => {
@@ -70,7 +78,7 @@ describe("responsive shell", () => {
     controller.dispose();
   });
 
-  it("keeps consequential catalog items inert and exposes only the supported grade read actions", () => {
+  it("keeps consequential catalog items inert and exposes the supported read actions", () => {
     const controller = mountBetterSiriusShell(document, readyModel);
     const shadow = document.getElementById(SHELL_HOST_ID)?.shadowRoot;
     const academicButton = shadow?.querySelector<HTMLButtonElement>("[data-view='academic']");
@@ -85,12 +93,204 @@ describe("responsive shell", () => {
         (group) => !group.open,
       ),
     ).toBe(true);
-    expect(panel?.querySelectorAll(".process-row-action")).toHaveLength(2);
+    expect(panel?.querySelectorAll(".process-row-action")).toHaveLength(3);
     expect(panel?.textContent).toContain("Matrícula Pregrado");
     expect(panel?.textContent).toContain("Horario del Estudiante Completo");
     expect(panel?.textContent).toContain("Consultas y Solicitudes");
     expect(panel?.textContent).toContain("Cursos en Línea");
     expect(panel?.querySelectorAll(".process-mode")).toHaveLength(0);
+    controller.dispose();
+  });
+
+  it("opens Oferta Académica and submits one explicit code search", async () => {
+    const search = vi.fn().mockResolvedValue("activated" as const);
+    const controller = mountBetterSiriusShell(document, readyModel, { onSearchAcademicOffer: search });
+    const shadow = document.getElementById(SHELL_HOST_ID)?.shadowRoot;
+
+    shadow?.querySelector<HTMLButtonElement>("[data-view='academic']")?.click();
+    shadow?.querySelector<HTMLButtonElement>("[data-open-academic-offer]")?.click();
+    const form = shadow?.querySelector<HTMLFormElement>("[data-offer-search-form]");
+    const input = form?.querySelector<HTMLInputElement>("input[name='course-code']");
+    if (!form || !input) throw new Error("Synthetic offer form is missing.");
+    input.value = "syn100";
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(shadow?.querySelector<HTMLElement>("[data-panel='offer']")?.hidden).toBe(false);
+    expect(search).toHaveBeenCalledOnce();
+    expect(search).toHaveBeenCalledWith("SYN100");
+    controller.dispose();
+  });
+
+  it("opens the native subject selector from the academic-offer search", async () => {
+    const openLookup = vi.fn().mockResolvedValue("activated" as const);
+    const controller = mountBetterSiriusShell(document, readyModel, {
+      onOpenAcademicOfferLookup: openLookup,
+    });
+    const shadow = document.getElementById(SHELL_HOST_ID)?.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>("[data-open-academic-offer]")?.click();
+    shadow?.querySelector<HTMLButtonElement>("[data-open-offer-lookup]")?.click();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(openLookup).toHaveBeenCalledOnce();
+    controller.dispose();
+  });
+
+  it("searches the selector explicitly and delegates an exact result choice", async () => {
+    const searchLookup = vi.fn().mockResolvedValue("activated" as const);
+    const selectLookup = vi.fn().mockResolvedValue("activated" as const);
+    const controller = mountBetterSiriusShell(
+      document,
+      {
+        ...readyModel,
+        academicOffer: {
+          state: "initial",
+          offerings: [],
+          lookup: {
+            state: "results",
+            query: "FGE",
+            options: [
+              { index: 0, code: "SYN-FGE-01", name: "Electiva sintética de cultura" },
+            ],
+          },
+        },
+      },
+      {
+        onSearchAcademicOfferLookup: searchLookup,
+        onSelectAcademicOfferLookup: selectLookup,
+      },
+    );
+    const shadow = document.getElementById(SHELL_HOST_ID)?.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>("[data-open-academic-offer]")?.click();
+    const form = shadow?.querySelector<HTMLFormElement>("[data-offer-lookup-form]");
+    const input = form?.querySelector<HTMLInputElement>("input[name='lookup-query']");
+    if (!form || !input) throw new Error("Synthetic offer lookup form is missing.");
+    input.value = "psicología";
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(searchLookup).toHaveBeenCalledWith("psicología");
+    const option = shadow?.querySelector<HTMLButtonElement>("[data-offer-lookup-option]");
+    option?.click();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(selectLookup).toHaveBeenCalledWith({
+      index: 0,
+      code: "SYN-FGE-01",
+      name: "Electiva sintética de cultura",
+    });
+    controller.dispose();
+  });
+
+  it("clears the academic-offer navigation message after Sirius accepts the route", async () => {
+    const open = vi.fn().mockResolvedValue("activated" as const);
+    const controller = mountBetterSiriusShell(
+      document,
+      { ...readyModel, academicOffer: { state: "unavailable", offerings: [] } },
+      { onOpenAcademicOffer: open },
+    );
+    const shadow = document.getElementById(SHELL_HOST_ID)?.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>("[data-open-academic-offer]")?.click();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(open).toHaveBeenCalledOnce();
+    expect(shadow?.querySelector<HTMLElement>("[data-offer-action-status]")?.hidden).toBe(true);
+    controller.dispose();
+  });
+
+  it("renders offer sections as readable rows instead of a twelve-column table", () => {
+    const controller = mountBetterSiriusShell(document, {
+      ...readyModel,
+      academicOffer: {
+        state: "results",
+        query: "SYN100",
+        offerings: [
+          {
+            code: "SYN100",
+            name: "Materia sintética",
+            credits: "4",
+            period: "SYN-P1",
+            blockDescription: "Sección 01",
+            schedule: "LU 08:00–10:00",
+            schedules: ["Lu-08:45-10:15", "Mi-10:30-12:00"],
+            capacity: "24",
+            modality: "Presencial",
+          },
+        ],
+      },
+    });
+    const shadow = document.getElementById(SHELL_HOST_ID)?.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>("[data-open-academic-offer]")?.click();
+
+    const offerPanel = shadow?.querySelector<HTMLElement>("[data-panel='offer']");
+    expect(offerPanel?.querySelectorAll(".offer-row")).toHaveLength(1);
+    expect(offerPanel?.querySelector("table")).toBeNull();
+    expect(offerPanel?.textContent).toContain("Lunes");
+    expect(offerPanel?.textContent).toContain("08:45-10:15");
+    expect(offerPanel?.textContent).toContain("Miércoles");
+    expect(offerPanel?.textContent).toContain("10:30-12:00");
+    expect(offerPanel?.textContent).toContain("Presencial");
+    controller.dispose();
+  });
+
+  it("keeps exact-code sections below the code form and lookup matches below the selector", () => {
+    const controller = mountBetterSiriusShell(document, {
+      ...readyModel,
+      academicOffer: {
+        state: "results",
+        query: "SYN100",
+        offerings: [{
+          code: "SYN100",
+          name: "Materia sintética",
+          blockDescription: "Sección 01",
+          schedule: "LU 08:00–10:00",
+        }],
+        lookup: {
+          state: "results",
+          query: "SYN",
+          options: [{ index: 0, code: "SYN100", name: "Materia sintética" }],
+        },
+      },
+    });
+    const shadow = document.getElementById(SHELL_HOST_ID)?.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>("[data-open-academic-offer]")?.click();
+    const view = shadow?.querySelector<HTMLElement>("[data-offer-view]");
+    const search = view?.querySelector("[data-offer-search-form]");
+    const sections = view?.querySelector(".offer-result-heading");
+    const lookup = view?.querySelector("[data-offer-lookup]");
+    if (!search || !sections || !lookup) throw new Error("Synthetic offer regions are missing.");
+
+    expect(search.compareDocumentPosition(sections) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(sections.compareDocumentPosition(lookup) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    controller.dispose();
+  });
+
+  it("shows exact-code progress inline without hiding an open selector", () => {
+    const controller = mountBetterSiriusShell(document, {
+      ...readyModel,
+      academicOffer: {
+        state: "initial",
+        offerings: [],
+        query: "SYN100",
+        pending: "searching",
+        lookup: {
+          state: "results",
+          query: "SYN",
+          options: [{ index: 0, code: "SYN100", name: "Materia sintética" }],
+        },
+      },
+    });
+    const shadow = document.getElementById(SHELL_HOST_ID)?.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>("[data-open-academic-offer]")?.click();
+    const view = shadow?.querySelector<HTMLElement>("[data-offer-view]");
+
+    expect(view?.querySelector("[data-offer-search-form]")).not.toBeNull();
+    expect(view?.querySelector(".offer-loading.inline")?.textContent).toContain("Buscando SYN100");
+    expect(view?.querySelector("[data-offer-lookup]")).not.toBeNull();
     controller.dispose();
   });
 
@@ -401,6 +601,7 @@ describe("responsive shell", () => {
       applications: [],
       academicProcesses: academicProcessCatalog(),
       academicHistory: { state: "unavailable", courses: [] },
+      academicOffer: { state: "unavailable", offerings: [] },
     });
     const text = document.getElementById(SHELL_HOST_ID)?.shadowRoot?.textContent ?? "";
 

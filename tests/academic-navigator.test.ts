@@ -58,6 +58,31 @@ describe("read-only academic navigator", () => {
     expect(activated).toHaveBeenCalledOnce();
   });
 
+  it("traverses Matrícula Pregrado and activates Oferta Académica once", async () => {
+    const navigation = document.createElement("nav");
+    document.body.append(navigation);
+    const activated = vi.fn();
+    const addStep = (label: string, next?: () => void): void => {
+      const button = document.createElement("button");
+      button.textContent = label;
+      button.addEventListener("click", () => {
+        button.remove();
+        next?.();
+      });
+      navigation.append(button);
+    };
+    addStep("Procesos Académicos", () =>
+      addStep("Pregrado", () =>
+        addStep("Matrícula Pregrado", () =>
+          addStep("Oferta Académica", activated),
+        ),
+      ),
+    );
+
+    await expect(new AcademicNavigator(document).openAcademicOffer()).resolves.toBe("activated");
+    expect(activated).toHaveBeenCalledOnce();
+  });
+
   it("fails closed when the target is absent", async () => {
     document.body.innerHTML = "<button>Proceso desconocido</button>";
     await expect(new AcademicNavigator(document).openHistoricalGrades()).resolves.toBe("not-found");

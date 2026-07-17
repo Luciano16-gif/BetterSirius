@@ -16,6 +16,13 @@ const PERIOD_GRADES_PATH = [
   "Consulta de Calificaciones Período",
 ] as const;
 
+const ACADEMIC_OFFER_PATH = [
+  "Procesos Académicos",
+  "Pregrado",
+  "Matrícula Pregrado",
+  "Oferta Académica",
+] as const;
+
 const CLICKABLE_SELECTOR = "a, button, [role='menuitem'], [role='link'], [onclick]";
 
 export class AcademicNavigator {
@@ -32,6 +39,10 @@ export class AcademicNavigator {
 
   async openPeriodGrades(): Promise<ReadOnlyNavigationResult> {
     return this.#openPath(PERIOD_GRADES_PATH);
+  }
+
+  async openAcademicOffer(): Promise<ReadOnlyNavigationResult> {
+    return this.#openPath(ACADEMIC_OFFER_PATH);
   }
 
   async #openPath(path: readonly string[]): Promise<ReadOnlyNavigationResult> {

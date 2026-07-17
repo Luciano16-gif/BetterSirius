@@ -1,15 +1,23 @@
 import { readAcademicHistory } from "../academic/history";
-import type { AcademicHistoryModel, DetectedApplication } from "../core/types";
+import { readAcademicOffer } from "../academic/offer";
+import type {
+  AcademicHistoryModel,
+  AcademicOfferLookupModel,
+  AcademicOfferModel,
+  DetectedApplication,
+} from "../core/types";
 import { applicationFromUrl, detectApplication } from "../detection/application-detector";
 
 export interface RegistrySnapshot {
   readonly applications: readonly DetectedApplication[];
   readonly academicHistory: AcademicHistoryModel;
+  readonly academicOffer: AcademicOfferModel;
 }
 
 interface FrameState {
   readonly application: DetectedApplication;
   readonly academicHistory: AcademicHistoryModel;
+  readonly academicOffer: AcademicOfferModel;
 }
 
 export type RegistryListener = (snapshot: RegistrySnapshot) => void;
@@ -129,6 +137,9 @@ export class FrameRegistry {
           academicHistory: detection.application === "historical-grades" && frameDocument
             ? readAcademicHistory(frameDocument)
             : { state: "unavailable", courses: [] },
+          academicOffer: detection.application === "academic-offer" && frameDocument
+            ? readAcademicOffer(frameDocument)
+            : { state: "unavailable", offerings: [] },
         });
       }
       else this.#frameStates.delete(frame);
@@ -141,6 +152,7 @@ export class FrameRegistry {
             confidence: 0.8,
           },
           academicHistory: { state: "unavailable", courses: [] },
+          academicOffer: { state: "unavailable", offerings: [] },
         });
       } else {
         this.#frameStates.delete(frame);
@@ -158,14 +170,46 @@ export class FrameRegistry {
   #emit(): void {
     const unique = new Map<string, DetectedApplication>();
     let academicHistory: AcademicHistoryModel = { state: "unavailable", courses: [] };
+    let academicOffer: AcademicOfferModel = { state: "unavailable", offerings: [] };
+    let academicOfferLookup: AcademicOfferLookupModel | undefined;
     for (const state of this.#frameStates.values()) {
       unique.set(state.application.application, state.application);
       if (historyPriority(state.academicHistory) > historyPriority(academicHistory)) {
         academicHistory = state.academicHistory;
       }
+      if (offerPriority(state.academicOffer) > offerPriority(academicOffer)) {
+        academicOffer = state.academicOffer;
+      }
+      if (state.academicOffer.lookup
+        && (!academicOfferLookup
+          || offerLookupPriority(state.academicOffer.lookup) > offerLookupPriority(academicOfferLookup))) {
+        academicOfferLookup = state.academicOffer.lookup;
+      }
     }
-    this.#listener({ applications: Array.from(unique.values()), academicHistory });
+    if (academicOfferLookup) academicOffer = { ...academicOffer, lookup: academicOfferLookup };
+    this.#listener({ applications: Array.from(unique.values()), academicHistory, academicOffer });
   }
+}
+
+function offerLookupPriority(model: AcademicOfferLookupModel): number {
+  const priorities: Readonly<Record<AcademicOfferLookupModel["state"], number>> = {
+    results: 4,
+    empty: 3,
+    initial: 2,
+    unknown: 1,
+  };
+  return priorities[model.state];
+}
+
+function offerPriority(model: AcademicOfferModel): number {
+  const priorities: Readonly<Record<AcademicOfferModel["state"], number>> = {
+    results: 5,
+    empty: 4,
+    initial: 3,
+    unknown: 2,
+    unavailable: 1,
+  };
+  return priorities[model.state];
 }
 
 function historyPriority(model: AcademicHistoryModel): number {

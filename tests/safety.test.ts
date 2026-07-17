@@ -33,6 +33,7 @@ describe("runtime scope", () => {
       /\bsessionStorage\b/,
       /\bindexedDB\b/,
       /\bconsole\.(?:log|info|debug|warn|error)\b/,
+      /\.value\b/,
     ];
     const sourceFiles: string[] = [];
     for await (const file of glob("src/**/*.ts")) sourceFiles.push(file);

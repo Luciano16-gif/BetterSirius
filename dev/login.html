@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BetterSirius — acceso sintético</title>
+  </head>
+  <body>
+    <main>
+      <h1>Bienvenido</h1>
+      <form action="#" method="post">
+        <div class="legacy-login-layout">
+          <label>Usuario <input name="user" autocomplete="username" /></label>
+          <label>Clave de acceso <input type="password" name="password" autocomplete="current-password" /></label>
+          <input type="submit" value="Entrar al sistema" />
+          <button type="button">Ayuda</button>
+          <button type="button">Cambio de clave</button>
+        </div>
+      </form>
+      <output id="synthetic-login-result">Sin enviar</output>
+    </main>
+    <script src="/assets/login-preview.js"></script>
+  </body>
+</html>
