@@ -14,10 +14,14 @@ if (!Number.isInteger(requestedPort) || requestedPort < 1024 || requestedPort > 
 await rm(outputDirectory, { recursive: true, force: true });
 await mkdir(resolve(outputDirectory, "assets"), { recursive: true });
 await cp(resolve(root, "dev/index.html"), resolve(outputDirectory, "index.html"));
+await cp(resolve(root, "dev/login.html"), resolve(outputDirectory, "login.html"));
 
 const buildContext = await context({
-  entryPoints: [resolve(root, "dev/preview.ts")],
-  outfile: resolve(outputDirectory, "assets/preview.js"),
+  entryPoints: {
+    preview: resolve(root, "dev/preview.ts"),
+    "login-preview": resolve(root, "dev/login-preview.ts"),
+  },
+  outdir: resolve(outputDirectory, "assets"),
   bundle: true,
   format: "iife",
   platform: "browser",

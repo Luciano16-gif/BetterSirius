@@ -21,7 +21,10 @@ Do not add session-bearing Sirius URLs to fixtures or network calls. The exact o
 3. Create synthetic fixtures for initial, loading, empty, success, validation, expired-session, and server-error states as applicable.
 4. Add semantic detection/parsing tests before adapter code.
 5. Keep unknown-state behavior explicit.
-6. Read-only navigation delegation requires an exact semantic allowlist, one user-triggered operation, no retry, and a fixture covering every menu step. Form or mutation delegation remains prohibited.
-7. Run `npm run verify` and visually inspect all preview states.
+6. Read-only navigation delegation requires an exact semantic allowlist, one user-triggered operation, no retry, and a fixture covering every menu step. A supported read criterion may be copied only into its current visible SAP control immediately before the user-requested action; hidden state and mutation delegation remain prohibited.
+7. Login presentation may only reuse the native username, password, and submit controls inside their existing form. Never read `.value`, attach credential input listeners, clone credential fields, create an alternative request, or invoke form submission from extension code.
+8. Run `npm run verify` and visually inspect all preview states.
+
+Academic-offer fixtures must cover initial, results, and empty tables plus the value-help initial, result, and empty states. All codes, names, schedules, capacities, prerequisite text, modalities, and costs must be synthetic. Do not paste a live result row into a fixture.
 
 No automated command in this repository may open or contact Sirius.
