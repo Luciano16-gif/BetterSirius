@@ -10,6 +10,11 @@ const SESSION_EXPIRED_PATTERNS = [
 
 const SAP_ERROR_PATTERNS = [
   "500 internal server error",
+  "505 http version not supported",
+  "http error 505",
+  "http status 505",
+  "error 505",
+  "505 error",
   "web dynpro: error",
   "error de aplicacion",
   "application error",
@@ -47,4 +52,3 @@ export function detectPortalSurface(document: Document): DetectionResult<PortalS
 
   return { kind: "unsupported", confidence: 0, reason: "No supported Sirius surface was identified." };
 }
-

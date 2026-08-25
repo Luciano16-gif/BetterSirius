@@ -144,6 +144,49 @@ describe("academic offer", () => {
     expect(click).toHaveBeenCalledOnce();
   });
 
+  it("waits for a fresh exact-code response before publishing its sections", async () => {
+    vi.useFakeTimers();
+    try {
+      const document = fixtureDocument("academic-offer-initial.html");
+      const search = document.querySelector<HTMLElement>(".lsButton");
+      if (!search) throw new Error("Synthetic offer search is missing.");
+      search.addEventListener("click", () => {
+        setTimeout(() => {
+          document.body.innerHTML = `
+            <table>
+              <tr><th>Código</th><th>Asignatura</th><th>Bloque</th><th>Horario</th><th>Cupo</th></tr>
+              <tr><td>SYN200</td><td>Respuesta nueva</td><td>01</td><td>Lu-08:00-09:30</td><td>12</td></tr>
+            </table>`;
+        }, 200);
+      });
+
+      const controller = new AcademicOfferController(document);
+      await expect(controller.search("SYN200")).resolves.toBe("activated");
+      const hydration = controller.hydrateSearchResults();
+      let settled = false;
+      void hydration.then(() => { settled = true; });
+
+      await vi.advanceTimersByTimeAsync(100);
+      expect(settled).toBe(false);
+      await vi.runAllTimersAsync();
+      await expect(hydration).resolves.toMatchObject({
+        status: "complete",
+        offer: {
+          state: "results",
+          offerings: [{
+            code: "SYN200",
+            name: "Respuesta nueva",
+            block: "01",
+            schedule: "Lu-08:00-09:30",
+            capacity: "12",
+          }],
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("opens the native value help and submits one explicit natural-language lookup", async () => {
     const offerDocument = fixtureDocument("academic-offer-initial.html");
     const helper = offerDocument.querySelector<HTMLElement>(".lsField__help--f4");
@@ -173,6 +216,125 @@ describe("academic offer", () => {
     await expect(new AcademicOfferController(document).searchLookup("FGE")).resolves.toBe("activated");
     expect(input?.value).toBe("FGE*");
     expect(searchClick).toHaveBeenCalledOnce();
+  });
+
+  it("waits for a fresh native response instead of hydrating rows from the previous query", async () => {
+    vi.useFakeTimers();
+    try {
+      const document = fixtureDocument("academic-offer-lookup-results.html");
+      const input = document.querySelector<HTMLInputElement>("input[type='text']");
+      const search = document.querySelector<HTMLElement>(".lsButton");
+      const rows = document.querySelectorAll<HTMLTableElement>("table.urSTCS table")[1];
+      if (!input || !search || !rows) throw new Error("Synthetic lookup controls are missing.");
+      input.value = "FGE*";
+      search.addEventListener("click", () => {
+        setTimeout(() => {
+          rows.innerHTML = "<tr><td>FGESP03</td><td>CONTENIDOS DIGITALES PARA EL METAVERSO</td></tr>";
+        }, 200);
+      });
+
+      const controller = new AcademicOfferController(document);
+      await expect(controller.searchLookup("Metaverso")).resolves.toBe("activated");
+      const hydration = controller.hydrateLookupResults();
+      let settled = false;
+      void hydration.then(() => { settled = true; });
+
+      await vi.advanceTimersByTimeAsync(100);
+      expect(settled).toBe(false);
+      await vi.runAllTimersAsync();
+      await expect(hydration).resolves.toEqual({
+        status: "complete",
+        options: [{
+          index: 0,
+          code: "FGESP03",
+          name: "CONTENIDOS DIGITALES PARA EL METAVERSO",
+        }],
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("progressively loads every virtualized native lookup row", async () => {
+    vi.useFakeTimers();
+    try {
+      const document = fixtureDocument("academic-offer-lookup-results.html");
+      const grid = document.querySelector<HTMLTableElement>("table.urSTCS");
+      const rows = grid?.querySelectorAll<HTMLTableElement>("table")[1];
+      if (!grid || !rows) throw new Error("Synthetic virtualized lookup grid is missing.");
+      const scroller = document.createElement("div");
+      grid.replaceWith(scroller);
+      scroller.append(grid);
+      Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 100 });
+      Object.defineProperty(scroller, "scrollHeight", {
+        configurable: true,
+        get: () => rows.rows.length >= 32 ? 100 : 400,
+      });
+      scroller.addEventListener("scroll", () => {
+        const current = rows.rows.length;
+        const target = Math.min(32, current + 10);
+        for (let index = current; index < target; index += 1) {
+          const row = rows.insertRow();
+          row.insertCell().textContent = `SYN-FGE-${String(index + 1).padStart(2, "0")}`;
+          row.insertCell().textContent = `Electiva sintética ${index + 1}`;
+        }
+      });
+
+      const hydration = new AcademicOfferController(document).hydrateLookupResults();
+      await vi.runAllTimersAsync();
+      await expect(hydration).resolves.toMatchObject({ status: "expanded" });
+      expect(readAcademicOffer(document).lookup?.options).toHaveLength(32);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("advances SAP's custom paged scrollbar until the lookup stops changing", async () => {
+    vi.useFakeTimers();
+    try {
+      const document = fixtureDocument("academic-offer-lookup-results.html");
+      const grid = document.querySelector<HTMLTableElement>("table.urSTCS");
+      const rows = grid?.querySelectorAll<HTMLTableElement>("table")[1];
+      if (!grid || !rows) throw new Error("Synthetic SAP lookup grid is missing.");
+      const wrapper = document.createElement("div");
+      grid.replaceWith(wrapper);
+      wrapper.append(grid);
+      const scrollbar = document.createElement("div");
+      scrollbar.className = "lsScrollbar lsScrollbar--vertical";
+      const pageNext = document.createElement("div");
+      pageNext.className = "lsScrollbar__track";
+      pageNext.setAttribute("acf", "PNext");
+      scrollbar.append(pageNext);
+      wrapper.append(scrollbar);
+      const pages = [
+        [["SYN-FGE-03", "Electiva sintética tres"], ["SYN-FGE-04", "Electiva sintética cuatro"]],
+        [["SYN-FGE-05", "Electiva sintética cinco"]],
+      ] as const;
+      let page = 0;
+      const clicks = vi.fn(() => {
+        const next = pages[page];
+        if (!next) return;
+        rows.innerHTML = next.map(([code, name]) => `<tr><td>${code}</td><td>${name}</td></tr>`).join("");
+        page += 1;
+      });
+      pageNext.addEventListener("click", clicks);
+
+      const hydration = new AcademicOfferController(document).hydrateLookupResults();
+      await vi.runAllTimersAsync();
+      await expect(hydration).resolves.toMatchObject({
+        status: "expanded",
+        options: [
+          { index: 0, code: "SYN-FGE-01", name: "Electiva sintética de cultura" },
+          { index: 1, code: "SYN-FGE-02", name: "Electiva sintética de sociedad" },
+          { index: 2, code: "SYN-FGE-03", name: "Electiva sintética tres" },
+          { index: 3, code: "SYN-FGE-04", name: "Electiva sintética cuatro" },
+          { index: 4, code: "SYN-FGE-05", name: "Electiva sintética cinco" },
+        ],
+      });
+      expect(clicks).toHaveBeenCalledTimes(4);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not click Search when the native input rejects the criterion", async () => {

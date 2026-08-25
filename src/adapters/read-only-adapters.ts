@@ -54,5 +54,7 @@ class PassiveAdapter implements SapApplicationAdapter<ReadOnlyApplicationState> 
 export const READ_ONLY_ADAPTERS: readonly SapApplicationAdapter<ReadOnlyApplicationState>[] = [
   new PassiveAdapter("historical-grades"),
   new PassiveAdapter("academic-offer"),
+  new PassiveAdapter("registration-window"),
+  new PassiveAdapter("web-payments"),
   new PassiveAdapter("registration"),
 ];

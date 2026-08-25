@@ -8,6 +8,8 @@ export type PortalSurface =
 export type SupportedApplication =
   | "historical-grades"
   | "academic-offer"
+  | "registration-window"
+  | "web-payments"
   | "registration";
 
 export type ApplicationState =
@@ -138,10 +140,37 @@ export interface AcademicOfferModel {
   readonly lookup?: AcademicOfferLookupModel;
 }
 
+export type RegistrationWindowState = "unavailable" | "results" | "unknown";
+
+export interface RegistrationWindowModel {
+  readonly state: RegistrationWindowState;
+  readonly startDate?: string;
+  readonly startTime?: string;
+  readonly endDate?: string;
+  readonly endTime?: string;
+  readonly pending?: "opening";
+}
+
+export type WebPaymentsState = "unavailable" | "results" | "unknown";
+
+export interface WebPaymentsModel {
+  readonly state: WebPaymentsState;
+  readonly balanceAtDate?: string;
+  readonly zellePayment?: string;
+  readonly totalDollars?: string;
+  readonly totalDebtBolivars?: string;
+  readonly noPendingPayments?: boolean;
+  readonly messageCount?: number;
+  readonly messageListAvailable?: boolean;
+  readonly pending?: "opening";
+}
+
 export interface ShellModel {
   readonly portalState: Exclude<PortalSurface, "unsupported" | "login">;
   readonly applications: readonly DetectedApplication[];
   readonly academicProcesses: AcademicProcessesModel;
   readonly academicHistory: AcademicHistoryModel;
   readonly academicOffer: AcademicOfferModel;
+  readonly registrationWindow: RegistrationWindowModel;
+  readonly webPayments: WebPaymentsModel;
 }

@@ -1,23 +1,34 @@
 import { readAcademicHistory } from "../academic/history";
 import { readAcademicOffer } from "../academic/offer";
+import { readRegistrationWindow } from "../academic/registration-window";
+import { readWebPayments } from "../finance/web-payments";
 import type {
   AcademicHistoryModel,
   AcademicOfferLookupModel,
   AcademicOfferModel,
   DetectedApplication,
+  PortalSurface,
+  RegistrationWindowModel,
+  WebPaymentsModel,
 } from "../core/types";
 import { applicationFromUrl, detectApplication } from "../detection/application-detector";
+import { detectPortalSurface } from "../detection/portal-detector";
 
 export interface RegistrySnapshot {
+  readonly portalState: Exclude<PortalSurface, "unsupported" | "login">;
   readonly applications: readonly DetectedApplication[];
   readonly academicHistory: AcademicHistoryModel;
   readonly academicOffer: AcademicOfferModel;
+  readonly registrationWindow: RegistrationWindowModel;
+  readonly webPayments: WebPaymentsModel;
 }
 
 interface FrameState {
   readonly application: DetectedApplication;
   readonly academicHistory: AcademicHistoryModel;
   readonly academicOffer: AcademicOfferModel;
+  readonly registrationWindow: RegistrationWindowModel;
+  readonly webPayments: WebPaymentsModel;
 }
 
 export type RegistryListener = (snapshot: RegistrySnapshot) => void;
@@ -30,6 +41,8 @@ export class FrameRegistry {
   readonly #loadHandlers = new Map<HTMLIFrameElement, EventListener>();
   readonly #documentObservers = new Map<Document, MutationObserver>();
   #scanScheduled = false;
+  #healthTimer: number | undefined;
+  #lastSnapshotSignature = "";
 
   constructor(rootDocument: Document, listener: RegistryListener) {
     this.#rootDocument = rootDocument;
@@ -45,6 +58,8 @@ export class FrameRegistry {
       attributes: true,
       attributeFilter: ["src"],
     });
+    const view = this.#rootDocument.defaultView;
+    if (view) this.#healthTimer = view.setInterval(() => this.scan(), 2_000);
   }
 
   stop(): void {
@@ -54,6 +69,11 @@ export class FrameRegistry {
     for (const observer of this.#documentObservers.values()) observer.disconnect();
     this.#documentObservers.clear();
     this.#frameStates.clear();
+    if (this.#healthTimer !== undefined) {
+      this.#rootDocument.defaultView?.clearInterval(this.#healthTimer);
+      this.#healthTimer = undefined;
+    }
+    this.#lastSnapshotSignature = "";
   }
 
   scan(): void {
@@ -140,6 +160,12 @@ export class FrameRegistry {
           academicOffer: detection.application === "academic-offer" && frameDocument
             ? readAcademicOffer(frameDocument)
             : { state: "unavailable", offerings: [] },
+          registrationWindow: detection.application === "registration-window" && frameDocument
+            ? readRegistrationWindow(frameDocument)
+            : { state: "unavailable" },
+          webPayments: detection.application === "web-payments" && frameDocument
+            ? readWebPayments(frameDocument)
+            : { state: "unavailable" },
         });
       }
       else this.#frameStates.delete(frame);
@@ -153,6 +179,8 @@ export class FrameRegistry {
           },
           academicHistory: { state: "unavailable", courses: [] },
           academicOffer: { state: "unavailable", offerings: [] },
+          registrationWindow: { state: "unavailable" },
+          webPayments: { state: "unavailable" },
         });
       } else {
         this.#frameStates.delete(frame);
@@ -171,6 +199,8 @@ export class FrameRegistry {
     const unique = new Map<string, DetectedApplication>();
     let academicHistory: AcademicHistoryModel = { state: "unavailable", courses: [] };
     let academicOffer: AcademicOfferModel = { state: "unavailable", offerings: [] };
+    let registrationWindow: RegistrationWindowModel = { state: "unavailable" };
+    let webPayments: WebPaymentsModel = { state: "unavailable" };
     let academicOfferLookup: AcademicOfferLookupModel | undefined;
     for (const state of this.#frameStates.values()) {
       unique.set(state.application.application, state.application);
@@ -185,10 +215,54 @@ export class FrameRegistry {
           || offerLookupPriority(state.academicOffer.lookup) > offerLookupPriority(academicOfferLookup))) {
         academicOfferLookup = state.academicOffer.lookup;
       }
+      if (registrationWindowPriority(state.registrationWindow)
+        > registrationWindowPriority(registrationWindow)) {
+        registrationWindow = state.registrationWindow;
+      }
+      if (webPaymentsPriority(state.webPayments) > webPaymentsPriority(webPayments)) {
+        webPayments = state.webPayments;
+      }
     }
     if (academicOfferLookup) academicOffer = { ...academicOffer, lookup: academicOfferLookup };
-    this.#listener({ applications: Array.from(unique.values()), academicHistory, academicOffer });
+    const snapshot: RegistrySnapshot = {
+      portalState: this.#portalState(),
+      applications: Array.from(unique.values()),
+      academicHistory,
+      academicOffer,
+      registrationWindow,
+      webPayments,
+    };
+    const signature = JSON.stringify(snapshot);
+    if (signature === this.#lastSnapshotSignature) return;
+    this.#lastSnapshotSignature = signature;
+    this.#listener(snapshot);
   }
+
+  #portalState(): Exclude<PortalSurface, "unsupported" | "login"> {
+    const documents = [this.#rootDocument, ...this.#documentObservers.keys()];
+    const surfaces = documents.map((document) => detectPortalSurface(document).kind);
+    if (surfaces.includes("session-expired")) return "session-expired";
+    if (surfaces.includes("sap-error")) return "sap-error";
+    return "portal-shell";
+  }
+}
+
+function webPaymentsPriority(model: WebPaymentsModel): number {
+  const priorities: Readonly<Record<WebPaymentsModel["state"], number>> = {
+    results: 3,
+    unknown: 2,
+    unavailable: 1,
+  };
+  return priorities[model.state];
+}
+
+function registrationWindowPriority(model: RegistrationWindowModel): number {
+  const priorities: Readonly<Record<RegistrationWindowModel["state"], number>> = {
+    results: 3,
+    unknown: 2,
+    unavailable: 1,
+  };
+  return priorities[model.state];
 }
 
 function offerLookupPriority(model: AcademicOfferLookupModel): number {

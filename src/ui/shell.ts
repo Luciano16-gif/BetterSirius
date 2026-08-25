@@ -16,8 +16,10 @@ import type {
   AcademicOfferModel,
   AcademicOffering,
   DetectedApplication,
+  RegistrationWindowModel,
   ShellModel,
   SupportedApplication,
+  WebPaymentsModel,
 } from "../core/types";
 
 export interface ShellController {
@@ -29,6 +31,9 @@ export interface ShellOptions {
   readonly onOpenHistoricalGrades?: () => Promise<ReadOnlyNavigationResult>;
   readonly onOpenPeriodGrades?: () => Promise<ReadOnlyNavigationResult>;
   readonly onOpenAcademicOffer?: () => Promise<ReadOnlyNavigationResult>;
+  readonly onOpenRegistrationWindow?: () => Promise<ReadOnlyNavigationResult>;
+  readonly onOpenWebPayments?: () => Promise<ReadOnlyNavigationResult>;
+  readonly onOpenWebPaymentMessages?: () => Promise<ReadOnlyNavigationResult>;
   readonly onSearchAcademicOffer?: (code: string) => Promise<AcademicOfferSearchResult>;
   readonly onOpenAcademicOfferLookup?: () => Promise<AcademicOfferSearchResult>;
   readonly onSearchAcademicOfferLookup?: (query: string) => Promise<AcademicOfferSearchResult>;
@@ -47,6 +52,8 @@ type GradeInquiryKind = "historical" | "period";
 const APPLICATION_LABELS: Readonly<Record<SupportedApplication, string>> = {
   "historical-grades": "Consulta Calificaciones Históricas",
   "academic-offer": "Oferta académica",
+  "registration-window": "Turno de Inscripción",
+  "web-payments": "Web de Pagos",
   registration: "Inscripción 2.0",
 };
 
@@ -88,6 +95,7 @@ export function mountBetterSiriusShell(
   const panels = Array.from(shadow.querySelectorAll<HTMLElement>("[data-panel]"));
   let currentModel = initialModel;
   let gradeInquiry: GradeInquiryKind = "historical";
+  let pendingOfferResultFocus: string | undefined;
 
   const showOriginal = (): void => {
     responsiveViewport.deactivate();
@@ -197,10 +205,17 @@ export function mountBetterSiriusShell(
       const code = lookupOption.dataset.offerLookupCode ?? "";
       const name = lookupOption.dataset.offerLookupName ?? "";
       if (Number.isInteger(index) && code && name) {
+        pendingOfferResultFocus = code;
         void selectAcademicOfferLookup(
           lookupOption,
           { index, code, name },
-          options.onSelectAcademicOfferLookup,
+          async (selection) => {
+            const result = options.onSelectAcademicOfferLookup
+              ? await options.onSelectAcademicOfferLookup(selection)
+              : "not-found";
+            if (result !== "activated") pendingOfferResultFocus = undefined;
+            return result;
+          },
         );
       }
       return;
@@ -230,6 +245,45 @@ export function mountBetterSiriusShell(
         || currentModel.academicOffer.state === "empty";
       if (!canReuseCurrentApplication) {
         void openAcademicOffer(shadow, offerTarget, options.onOpenAcademicOffer);
+      }
+      return;
+    }
+    const paymentMessagesTarget = event.target instanceof Element
+      ? event.target.closest<HTMLButtonElement>("[data-open-payment-messages]")
+      : null;
+    if (paymentMessagesTarget) {
+      void openWebPaymentMessages(
+        paymentMessagesTarget,
+        options.onOpenWebPaymentMessages,
+        showOriginal,
+      );
+      return;
+    }
+    const webPaymentsTarget = event.target instanceof Element
+      ? event.target.closest<HTMLButtonElement>("[data-open-web-payments]")
+      : null;
+    if (webPaymentsTarget) {
+      showPanel("payments", "payments");
+      const canReuseCurrentApplication = currentModel.webPayments.pending !== undefined
+        || currentModel.webPayments.state === "results";
+      if (!canReuseCurrentApplication) {
+        void openWebPayments(webPaymentsTarget, options.onOpenWebPayments);
+      }
+      return;
+    }
+    const registrationWindowTarget = event.target instanceof Element
+      ? event.target.closest<HTMLButtonElement>("[data-open-registration-window]")
+      : null;
+    if (registrationWindowTarget) {
+      showPanel("registration-window", "enrollment");
+      const canReuseCurrentApplication = currentModel.registrationWindow.pending !== undefined
+        || currentModel.registrationWindow.state === "results";
+      if (!canReuseCurrentApplication) {
+        void openRegistrationWindow(
+          shadow,
+          registrationWindowTarget,
+          options.onOpenRegistrationWindow,
+        );
       }
       return;
     }
@@ -290,6 +344,17 @@ export function mountBetterSiriusShell(
   const update = (model: ShellModel): void => {
     currentModel = model;
     renderModel(shadow, model, gradeInquiry);
+    if (pendingOfferResultFocus
+      && !model.academicOffer.pending
+      && model.academicOffer.state === "results"
+      && model.academicOffer.offerings.some((offering) => offering.code === pendingOfferResultFocus)) {
+      pendingOfferResultFocus = undefined;
+      const target = shadow.querySelector<HTMLElement>("[data-offer-results]");
+      const reducedMotion = document.defaultView?.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+      document.defaultView?.requestAnimationFrame(() => {
+        target?.scrollIntoView?.({ behavior: reducedMotion ? "auto" : "smooth", block: "start" });
+      });
+    }
   };
   update(initialModel);
 
@@ -480,6 +545,29 @@ async function openAcademicOffer(
   button.disabled = false;
 }
 
+async function openRegistrationWindow(
+  root: ShadowRoot,
+  button: HTMLButtonElement,
+  action: ShellOptions["onOpenRegistrationWindow"],
+): Promise<void> {
+  const status = root.querySelector<HTMLElement>("[data-registration-window-action-status]");
+  button.disabled = true;
+  if (status) {
+    status.hidden = false;
+    status.textContent = "Abriendo Turno de Inscripción…";
+  }
+  const result = action ? await action() : "not-found";
+  if (result === "activated" || !button.isConnected) return;
+
+  const messages: Readonly<Record<Exclude<ReadOnlyNavigationResult, "activated">, string>> = {
+    "not-found": "No encontré Turno de Inscripción en la navegación actual.",
+    ambiguous: "Sirius mostró más de un acceso posible y la operación fue detenida.",
+    busy: "Ya hay una navegación en curso.",
+  };
+  if (status) status.textContent = messages[result];
+  button.disabled = false;
+}
+
 async function searchAcademicOffer(
   form: HTMLFormElement,
   code: string,
@@ -632,6 +720,149 @@ function renderModel(root: ShadowRoot, model: ShellModel, inquiry: GradeInquiryK
   renderAcademicProcesses(root, model.academicProcesses);
   renderAcademicHistory(root, model.academicHistory, inquiry);
   renderAcademicOffer(root, model.academicOffer);
+  renderRegistrationWindow(root, model.registrationWindow);
+  renderWebPayments(root, model.webPayments);
+}
+
+async function openWebPayments(
+  button: HTMLButtonElement,
+  action: ShellOptions["onOpenWebPayments"],
+): Promise<void> {
+  const status = button.closest<HTMLElement>("[data-panel]")
+    ?.querySelector<HTMLElement>("[data-payments-action-status]");
+  button.disabled = true;
+  if (status) {
+    status.hidden = false;
+    status.textContent = "Abriendo Web de Pagos…";
+  }
+  const result = action ? await action() : "not-found";
+  if (result === "activated" || !button.isConnected) return;
+  button.disabled = false;
+  if (status) {
+    status.textContent = result === "busy"
+      ? "Ya hay una consulta en curso."
+      : "No pude abrir Web de Pagos de forma segura.";
+  }
+}
+
+async function openWebPaymentMessages(
+  button: HTMLButtonElement,
+  action: ShellOptions["onOpenWebPaymentMessages"],
+  showOriginal: () => void,
+): Promise<void> {
+  const status = button.closest<HTMLElement>("[data-payments-view]")
+    ?.querySelector<HTMLElement>("[data-payment-messages-status]");
+  button.disabled = true;
+  if (status) {
+    status.hidden = false;
+    status.textContent = "Abriendo la lista…";
+  }
+  const result = action ? await action() : "not-found";
+  if (result === "activated") {
+    showOriginal();
+    return;
+  }
+  button.disabled = false;
+  if (status) status.textContent = "No pude abrir la lista de mensajes de forma segura.";
+}
+
+function renderWebPayments(root: ShadowRoot, model: WebPaymentsModel): void {
+  const container = requiredElement<HTMLElement>(root, "[data-payments-view]");
+  if (model.pending) {
+    container.innerHTML = `
+      <div class="payments-loading" role="status" aria-live="polite">
+        <div><span class="loading-rule"></span><h2>Abriendo Web de Pagos</h2><p>Esperando la respuesta de Sirius.</p></div>
+        <div class="payments-skeleton" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+      </div>`;
+    return;
+  }
+
+  if (model.state === "results") {
+    const pendingStatus = model.noPendingPayments
+      ? `<div class="payments-status is-clear" role="status"><span>${ICONS.check}</span><strong>No tienes pagos pendientes</strong></div>`
+      : `<div class="payments-status" role="status"><span class="status-indicator"></span><strong>Estado de cuenta disponible</strong></div>`;
+    const messageCount = model.messageCount ?? 0;
+    container.innerHTML = `
+      ${pendingStatus}
+      <section class="payments-summary" aria-label="Resumen de Web de Pagos">
+        ${paymentAmountMarkup("Saldo total a la fecha", model.balanceAtDate)}
+        ${paymentAmountMarkup("Pago en Zelle", model.zellePayment)}
+        ${paymentAmountMarkup("Total dólares", model.totalDollars)}
+        ${paymentAmountMarkup("Deuda en bolívares (BCV)", model.totalDebtBolivars)}
+      </section>
+      <section class="payments-messages" aria-label="Mensajes de Web de Pagos">
+        <div><span class="eyebrow">Mensajes</span><h2>${messageCount} ${messageCount === 1 ? "mensaje" : "mensajes"}</h2></div>
+        ${model.messageListAvailable
+          ? `<button class="secondary-action" type="button" data-open-payment-messages>Visualizar lista ${ICONS.arrow}</button>`
+          : ""}
+        <p class="action-status" data-payment-messages-status role="status" hidden></p>
+      </section>`;
+    return;
+  }
+
+  const unknown = model.state === "unknown";
+  container.innerHTML = `
+    <div class="payments-empty">
+      <span class="empty-rule"></span>
+      <h2>${unknown ? "No pude interpretar el estado de cuenta" : "Web de Pagos no está abierto"}</h2>
+      <p>${unknown
+        ? "La estructura visible de Sirius no coincide con el formato verificado."
+        : "Abre la consulta directamente desde BetterSirius."}</p>
+      <button class="primary-action" type="button" data-open-web-payments>
+        ${unknown ? "Volver a abrir" : "Ir a Web de Pagos"} ${ICONS.arrow}
+      </button>
+      <p class="action-status" data-payments-action-status role="status" hidden></p>
+    </div>`;
+}
+
+function paymentAmountMarkup(label: string, amount?: string): string {
+  return `<article><span>${label}</span><strong>${escapeHtml(amount ?? "—")}</strong></article>`;
+}
+
+function renderRegistrationWindow(root: ShadowRoot, model: RegistrationWindowModel): void {
+  const container = requiredElement<HTMLElement>(root, "[data-registration-window-view]");
+  if (model.pending) {
+    container.innerHTML = `
+      <div class="registration-window-loading" role="status" aria-live="polite">
+        <span class="loading-rule"></span>
+        <h2>Abriendo Turno de Inscripción</h2>
+        <p>Esperando la respuesta de Sirius.</p>
+        <div class="registration-window-skeleton" aria-hidden="true"><span></span><span></span></div>
+      </div>`;
+    return;
+  }
+
+  if (model.state === "results") {
+    container.innerHTML = `
+      <section class="registration-window-card" aria-label="Ventana de inscripción">
+        <header><span class="eyebrow">Ventana asignada</span><h2>Tu turno de inscripción</h2></header>
+        <div class="registration-window-times">
+          <article>
+            <span class="registration-window-index">01</span>
+            <div><small>Fecha de inicio</small><strong>${escapeHtml(model.startDate ?? "—")}</strong><time>${escapeHtml(model.startTime ?? "—")}</time></div>
+          </article>
+          <article>
+            <span class="registration-window-index">02</span>
+            <div><small>Fecha final</small><strong>${escapeHtml(model.endDate ?? "—")}</strong><time>${escapeHtml(model.endTime ?? "—")}</time></div>
+          </article>
+        </div>
+      </section>`;
+    return;
+  }
+
+  const unknown = model.state === "unknown";
+  container.innerHTML = `
+    <div class="registration-window-empty">
+      <span class="empty-rule"></span>
+      <h2>${unknown ? "No pude interpretar el turno" : "El turno no está abierto"}</h2>
+      <p>${unknown
+        ? "La estructura de Sirius no coincide con el formato verificado."
+        : "Abre la consulta directamente desde BetterSirius."}</p>
+      <button class="primary-action" type="button" data-open-registration-window>
+        ${unknown ? "Volver a abrir" : "Abrir Turno de Inscripción"} ${ICONS.arrow}
+      </button>
+      <p class="action-status" data-registration-window-action-status hidden></p>
+    </div>`;
 }
 
 function renderAcademicHistory(
@@ -820,7 +1051,7 @@ function renderAcademicOffer(root: ShadowRoot, model: AcademicOfferModel): void 
   if (model.state === "results") {
     container.innerHTML = `
       ${search}
-      <div class="offer-result-heading">
+      <div class="offer-result-heading" data-offer-results>
         <div><span class="eyebrow">Resultado</span><h2>${escapeHtml(model.offerings[0]?.name ?? "Oferta encontrada")}</h2></div>
         <span><strong>${model.offerings.length}</strong> ${model.offerings.length === 1 ? "sección" : "secciones"}</span>
       </div>
@@ -1073,7 +1304,8 @@ function academicProcessMarkup(process: AcademicProcessItem): string {
   const isHistory = process.id === "historical-grades";
   const isPeriodGrades = process.id === "period-grades";
   const isAcademicOffer = process.id === "academic-offer";
-  const isAction = isHistory || isPeriodGrades || isAcademicOffer;
+  const isRegistrationWindow = process.id === "registration-window";
+  const isAction = isHistory || isPeriodGrades || isAcademicOffer || isRegistrationWindow;
   const element = isAction ? "button" : "article";
   const attributes = isHistory
     ? 'type="button" data-open-history'
@@ -1081,6 +1313,8 @@ function academicProcessMarkup(process: AcademicProcessItem): string {
       ? 'type="button" data-open-period-grades'
       : isAcademicOffer
         ? 'type="button" data-open-academic-offer'
+        : isRegistrationWindow
+          ? 'type="button" data-open-registration-window'
         : 'aria-disabled="true"';
   return `
     <${element} class="process-row ${isAction ? "process-row-action" : ""}" ${attributes}>
@@ -1098,7 +1332,15 @@ function applicationMarkup(application: DetectedApplication): string {
       : `Estado reconocido: ${stateLabel(application.state)}.`;
   return `
     <article class="application-row">
-      <span class="application-index">${application.application === "historical-grades" ? "01" : application.application === "academic-offer" ? "02" : "03"}</span>
+      <span class="application-index">${application.application === "historical-grades"
+        ? "01"
+        : application.application === "academic-offer"
+          ? "02"
+          : application.application === "registration-window"
+            ? "03"
+            : application.application === "web-payments"
+              ? "04"
+              : "05"}</span>
       <div>
         <h3>${APPLICATION_LABELS[application.application]}</h3>
         <p>${detail}</p>
@@ -1160,6 +1402,13 @@ function markup(): string {
               <button type="button" data-view="academic" data-route="requests" data-academic-focus="requests">Consultas y Solicitudes</button>
             </div>
           </div>
+          <div class="nav-section">
+            <button class="nav-item" type="button" data-view="payments" data-route="payments" data-open-web-payments>${ICONS.views}<span class="nav-label-wide">Procesos Administrativos</span><span class="nav-label-mobile">Pagos</span></button>
+            <div class="nav-tree" aria-label="Procesos Administrativos">
+              <span>Finanzas</span>
+              <button type="button" data-view="payments" data-route="payments" data-open-web-payments>Web de Pagos</button>
+            </div>
+          </div>
         </nav>
       </aside>
 
@@ -1183,6 +1432,7 @@ function markup(): string {
           <div class="home-actions">
             <button type="button" data-view="academic" data-route="academic"><span>Ver Procesos Académicos</span><strong><span data-academic-total>00</span> opciones</strong>${ICONS.arrow}</button>
             <button type="button" data-view="history" data-route="requests"><span>Consulta Calificaciones Históricas</span><strong><span data-history-count>—</span> materias</strong>${ICONS.arrow}</button>
+            <button type="button" data-view="payments" data-route="payments" data-open-web-payments><span>Ir a Web de Pagos</span><strong>Ver estado de cuenta</strong>${ICONS.arrow}</button>
           </div>
         </section>
 
@@ -1201,6 +1451,23 @@ function markup(): string {
           </div>
           <p class="action-status" data-offer-action-status role="status" hidden></p>
           <div data-offer-view></div>
+        </section>
+
+        <section class="panel" data-panel="registration-window" hidden>
+          <div class="breadcrumb">Procesos Académicos <span>/</span> Pregrado <span>/</span> Matrícula Pregrado</div>
+          <div class="page-heading registration-window-heading">
+            <div><span class="eyebrow">Consulta</span><h1>Turno de Inscripción</h1></div>
+          </div>
+          <div data-registration-window-view></div>
+        </section>
+
+        <section class="panel" data-panel="payments" hidden>
+          <div class="breadcrumb">Procesos Administrativos <span>/</span> Web de Pagos</div>
+          <div class="page-heading payments-heading">
+            <div><span class="eyebrow">Consulta</span><h1>Web de Pagos</h1></div>
+          </div>
+          <p class="action-status" data-payments-action-status role="status" hidden></p>
+          <div data-payments-view></div>
         </section>
 
         <section class="panel" data-panel="academic" hidden>
@@ -1285,9 +1552,9 @@ function styles(): string {
     .state-label.blocked { color: #994408; background: var(--accent-soft); }
     .compact-hero { padding-bottom: 34px; border-bottom: 2px solid var(--blue); }
     .compact-hero h1 { margin-bottom: 0; }
-    .home-actions { display: grid; grid-template-columns: 1.35fr 1fr; margin-top: 42px; border-top: 1px solid var(--line); }
+    .home-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 42px; border-top: 1px solid var(--line); }
     .home-actions button { display: grid; grid-template-columns: 1fr auto auto; gap: 18px; align-items: center; min-height: 88px; padding: 22px 20px; border: 0; border-bottom: 1px solid var(--line); color: var(--ink); background: transparent; text-align: left; cursor: pointer; transition: color .2s ease, background-color .2s ease, transform .2s ease; }
-    .home-actions button:first-child { border-right: 1px solid var(--line); }
+    .home-actions button:not(:last-child) { border-right: 1px solid var(--line); }
     .home-actions button:hover { color: var(--blue); background: var(--surface); }
     .home-actions button:active { transform: translateY(1px); }
     .home-actions button > span { font-size: 16px; font-weight: 700; }
@@ -1295,6 +1562,47 @@ function styles(): string {
     .home-actions button svg { width: 17px; color: var(--accent-strong); }
     .history-heading { display: flex; align-items: end; justify-content: space-between; gap: 30px; border-bottom: 2px solid var(--blue); }
     .history-heading h1 { margin-bottom: 0; }
+    .registration-window-heading { padding-bottom: 34px; border-bottom: 2px solid var(--blue); }
+    .registration-window-heading h1 { margin: 14px 0 0; }
+    .registration-window-card { padding-top: 42px; }
+    .registration-window-card > header h2 { margin: 8px 0 24px; font-size: 27px; letter-spacing: -.035em; }
+    .registration-window-times { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+    .registration-window-times article { display: grid; grid-template-columns: 44px 1fr; gap: 18px; padding: 30px 24px 32px 2px; }
+    .registration-window-times article + article { padding-left: 30px; border-left: 1px solid var(--line); }
+    .registration-window-index { padding-top: 4px; color: var(--accent-strong); font-family: ui-monospace, "Cascadia Mono", monospace; font-size: 11px; font-weight: 780; }
+    .registration-window-times small { display: block; margin-bottom: 9px; color: var(--muted); font-size: 10px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+    .registration-window-times strong { display: block; color: var(--blue); font-size: clamp(25px, 3vw, 38px); letter-spacing: -.04em; }
+    .registration-window-times time { display: block; margin-top: 7px; color: var(--ink); font-variant-numeric: tabular-nums; font-size: 16px; font-weight: 700; }
+    .registration-window-empty, .registration-window-loading { min-height: 280px; padding: 46px 0; border-bottom: 1px solid var(--line); }
+    .registration-window-empty h2, .registration-window-loading h2 { margin-bottom: 8px; font-size: 24px; }
+    .registration-window-empty > p, .registration-window-loading > p { max-width: 590px; margin-bottom: 18px; color: var(--muted); font-size: 13px; line-height: 1.55; }
+    .registration-window-skeleton { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 34px; }
+    .registration-window-skeleton span { display: block; height: 92px; border-radius: 8px; background: #e6ebf2; }
+    .payments-heading { padding-bottom: 34px; border-bottom: 2px solid var(--blue); }
+    .payments-heading h1 { margin: 14px 0 0; }
+    .payments-status { display: flex; align-items: center; gap: 11px; padding: 17px 0; border-bottom: 1px solid var(--line); color: var(--ink); }
+    .payments-status > span { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; color: #fff; background: var(--accent-strong); }
+    .payments-status > span svg { width: 16px; }
+    .payments-status.is-clear > span { background: var(--blue); }
+    .payments-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-bottom: 1px solid var(--line); }
+    .payments-summary article { min-width: 0; padding: 30px 24px 28px 0; border-bottom: 1px solid var(--line); }
+    .payments-summary article:nth-child(odd) { border-right: 1px solid var(--line); }
+    .payments-summary article:nth-child(even) { padding-left: 24px; }
+    .payments-summary article:nth-last-child(-n+2) { border-bottom: 0; }
+    .payments-summary span { display: block; margin-bottom: 10px; color: var(--muted); font-size: 10px; font-weight: 760; letter-spacing: .07em; text-transform: uppercase; }
+    .payments-summary strong { display: block; color: var(--blue); font-family: ui-monospace, "Cascadia Mono", monospace; font-size: clamp(25px, 4vw, 42px); font-weight: 720; letter-spacing: -.045em; overflow-wrap: anywhere; }
+    .payments-messages { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 22px; align-items: center; padding: 30px 0; border-bottom: 1px solid var(--line); }
+    .payments-messages h2 { margin: 7px 0 0; color: var(--ink); font-size: 21px; }
+    .payments-messages .action-status { grid-column: 1 / -1; margin: 0; }
+    .secondary-action { display: inline-flex; align-items: center; gap: 9px; padding: 12px 0; border: 0; color: var(--blue); background: transparent; font: inherit; font-size: 12px; font-weight: 780; cursor: pointer; }
+    .secondary-action svg { width: 16px; }
+    .secondary-action:disabled { color: var(--muted); cursor: wait; }
+    .payments-empty { min-height: 230px; padding: 42px 0; border-bottom: 1px solid var(--line); }
+    .payments-empty h2, .payments-loading h2 { margin: 0 0 8px; font-size: 24px; }
+    .payments-empty p, .payments-loading p { max-width: 590px; margin: 0 0 18px; color: var(--muted); font-size: 13px; line-height: 1.55; }
+    .payments-loading { display: grid; grid-template-columns: minmax(0, 1fr) minmax(230px, .7fr); gap: 42px; align-items: center; min-height: 280px; padding: 42px 0; border-bottom: 1px solid var(--line); }
+    .payments-skeleton { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; }
+    .payments-skeleton span { display: block; height: 68px; border-radius: 5px; background: #e6ebf2; }
     .breadcrumb { margin-bottom: 14px; color: var(--muted); font-size: 11px; font-weight: 650; }
     .breadcrumb span { padding: 0 7px; color: #9aa7b8; }
     .page-count { display: flex; align-items: baseline; gap: 7px; padding-bottom: 9px; }
@@ -1385,7 +1693,7 @@ function styles(): string {
     .offer-lookup-loading span:nth-child(1) { width: 46%; }
     .offer-lookup-loading span:nth-child(2) { width: 82%; }
     .offer-lookup-loading span:nth-child(3) { width: 64%; }
-    .offer-result-heading { display: flex; align-items: end; justify-content: space-between; gap: 24px; padding: 34px 0 20px; }
+    .offer-result-heading { display: flex; align-items: end; justify-content: space-between; gap: 24px; padding: 34px 0 20px; scroll-margin-top: 24px; }
     .offer-result-heading h2 { margin: 7px 0 0; color: var(--ink); font-size: 26px; letter-spacing: -.035em; }
     .offer-result-heading > span { color: var(--muted); font-size: 11px; }
     .offer-result-heading > span strong { color: var(--blue); font-size: 24px; }
@@ -1506,7 +1814,7 @@ function styles(): string {
       .viewport { display: block; padding-bottom: 0; }
       .sidebar { position: fixed; inset: auto 0 0; min-height: 0; height: calc(68px + env(safe-area-inset-bottom)); padding: 7px 14px calc(7px + env(safe-area-inset-bottom)); z-index: 3; }
       .brand { display: none; }
-      .navigation { grid-template-columns: repeat(2, 1fr); gap: 4px; margin: 0; }
+      .navigation { grid-template-columns: repeat(3, 1fr); gap: 4px; margin: 0; }
       .nav-section { display: contents; }
       .nav-tree { display: none; }
       .nav-label-wide { display: none; }
@@ -1532,9 +1840,21 @@ function styles(): string {
       .overview-safe { grid-column: 2; justify-self: start; }
       .compact-hero { padding-bottom: 27px; }
       .home-actions { grid-template-columns: 1fr; margin-top: 28px; }
-      .home-actions button:first-child { border-right: 0; }
+      .home-actions button { border-right: 0 !important; }
       .history-heading { align-items: flex-start; flex-direction: column; gap: 6px; }
       .history-heading h1 { max-width: 100%; font-size: 34px; line-height: 1.02; overflow-wrap: anywhere; }
+      .registration-window-heading h1 { font-size: 36px; line-height: 1.02; }
+      .registration-window-times { grid-template-columns: 1fr; }
+      .registration-window-times article { padding: 24px 2px; }
+      .registration-window-times article + article { padding-left: 2px; border-top: 1px solid var(--line); border-left: 0; }
+      .registration-window-skeleton { grid-template-columns: 1fr; }
+      .payments-heading h1 { font-size: 36px; line-height: 1.02; }
+      .payments-summary { grid-template-columns: 1fr; }
+      .payments-summary article, .payments-summary article:nth-child(even) { padding: 24px 2px; border-right: 0; border-bottom: 1px solid var(--line); }
+      .payments-summary article:last-child { border-bottom: 0; }
+      .payments-messages { grid-template-columns: 1fr; gap: 12px; }
+      .payments-messages .secondary-action { justify-content: space-between; width: 100%; }
+      .payments-loading { grid-template-columns: 1fr; gap: 28px; min-height: 300px; }
       .offer-heading { align-items: flex-start; flex-direction: column; gap: 6px; }
       .offer-heading h1 { max-width: 100%; font-size: 36px; line-height: 1.02; }
       .offer-search { padding-top: 21px; }

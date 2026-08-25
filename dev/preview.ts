@@ -83,12 +83,26 @@ const model: ShellModel = {
             },
           ],
         },
+  registrationWindow: { state: "unavailable" },
+  webPayments: state === "payments-loading"
+    ? { state: "unavailable", pending: "opening" }
+    : {
+        state: "results",
+        balanceAtDate: "125,00",
+        zellePayment: "25,00",
+        totalDollars: "100,00",
+        totalDebtBolivars: "9.999,99",
+        noPendingPayments: false,
+        messageCount: 2,
+        messageListAvailable: true,
+      },
   applications:
     state === "empty"
       ? []
       : [
           { application: "historical-grades", state: "results", confidence: 1 },
           { application: "academic-offer", state: "initial", confidence: 1 },
+          { application: "web-payments", state: "results", confidence: 1 },
           { application: "registration", state: "initial", confidence: 1 },
         ],
 };
@@ -96,7 +110,7 @@ const model: ShellModel = {
 mountBetterSiriusShell(document, model);
 
 const requestedPanel = parameters.get("panel");
-if (["academic", "history"].includes(requestedPanel ?? "")) {
+if (["academic", "history", "payments"].includes(requestedPanel ?? "")) {
   document
     .getElementById("better-sirius-root")
     ?.shadowRoot?.querySelector<HTMLButtonElement>(`[data-view='${requestedPanel}']`)

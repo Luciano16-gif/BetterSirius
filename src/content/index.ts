@@ -3,6 +3,7 @@ import type {
   AcademicOfferLookupPending,
   AcademicOfferPending,
   ShellModel,
+  WebPaymentsModel,
 } from "../core/types";
 import { readAcademicProcesses } from "../academic/processes";
 import { AcademicHistoryFlow } from "../academic/history-flow";
@@ -11,11 +12,20 @@ import { reconcileAcademicOffer } from "../academic/offer-flow";
 import { detectPortalSurface } from "../detection/portal-detector";
 import { FrameRegistry } from "../registry/frame-registry";
 import { AcademicNavigator } from "../navigation/academic-navigator";
+import { FinancialNavigator } from "../navigation/financial-navigator";
 import { HistoryProgramController } from "../navigation/history-program-controller";
 import { HistoryPeriodController } from "../navigation/history-period-controller";
 import { assertAllowedRuntimeLocation } from "../safety/runtime-policy";
 import { mountBetterSiriusShell } from "../ui/shell";
 import { mountBetterSiriusLogin } from "../login/login-shell";
+import {
+  startWebPaymentsFramePublisher,
+  webPaymentsFromBridgeEvent,
+} from "../finance/web-payments-bridge";
+import {
+  listenForWebPaymentsRuntime,
+  publishWebPaymentsRuntime,
+} from "../finance/web-payments-runtime";
 
 function start(): void {
   assertAllowedRuntimeLocation(window.location);
@@ -35,16 +45,58 @@ function start(): void {
     academicProcesses: readAcademicProcesses(document),
     academicHistory: { state: "unavailable", courses: [] },
     academicOffer: { state: "unavailable", offerings: [] },
+    registrationWindow: { state: "unavailable" },
+    webPayments: { state: "unavailable" },
   };
   const navigator = new AcademicNavigator(document);
+  const financialNavigator = new FinancialNavigator(document);
   const programController = new HistoryProgramController(document);
   const periodController = new HistoryPeriodController(document);
   const historyFlow = new AcademicHistoryFlow(model.academicHistory);
   const offerController = new AcademicOfferController(document);
   let historyTimeout: number | undefined;
   let offerTimeout: number | undefined;
+  let offerRequestId = 0;
   let offerLookupTimeout: number | undefined;
+  let offerLookupRequestId = 0;
+  let registrationWindowTimeout: number | undefined;
+  let webPaymentsTimeout: number | undefined;
   let shell: ReturnType<typeof mountBetterSiriusShell>;
+  const bridgedWebPayments = new Map<unknown, WebPaymentsModel>();
+  const runtimePaymentSource = Symbol("web-payments-runtime");
+
+  const readBridgedWebPayments = (): WebPaymentsModel => {
+    let selected: WebPaymentsModel = { state: "unavailable" };
+    for (const candidate of bridgedWebPayments.values()) {
+      if (webPaymentsPriority(candidate) > webPaymentsPriority(selected)) selected = candidate;
+    }
+    return selected;
+  };
+  const acceptBridgedPayment = (
+    source: unknown,
+    paymentModel: WebPaymentsModel,
+  ): void => {
+    if (paymentModel.state === "unavailable") bridgedWebPayments.delete(source);
+    else bridgedWebPayments.set(source, paymentModel);
+    const observed = readBridgedWebPayments();
+    if (model.webPayments.pending && observed.state !== "results") return;
+    model = { ...model, webPayments: observed };
+    if (observed.state === "results" && webPaymentsTimeout !== undefined) {
+      window.clearTimeout(webPaymentsTimeout);
+      webPaymentsTimeout = undefined;
+    }
+    shell?.update(model);
+  };
+  const onFrameMessage = (event: MessageEvent): void => {
+    if (!event.source) return;
+    const paymentModel = webPaymentsFromBridgeEvent(event);
+    if (!paymentModel) return;
+    acceptBridgedPayment(event.source, paymentModel);
+  };
+  window.addEventListener("message", onFrameMessage);
+  const stopRuntimePayments = listenForWebPaymentsRuntime((paymentModel) => {
+    acceptBridgedPayment(runtimePaymentSource, paymentModel);
+  });
 
   const beginHistoryOperation = (
     kind: AcademicHistoryPending,
@@ -63,15 +115,24 @@ function start(): void {
   };
 
   const beginOfferOperation = (kind: AcademicOfferPending, query?: string): void => {
+    const academicOffer = kind === "searching"
+      ? {
+          state: "initial" as const,
+          offerings: [],
+          pending: kind,
+          ...(query ? { query } : {}),
+          ...(model.academicOffer.lookup ? { lookup: model.academicOffer.lookup } : {}),
+        }
+      : {
+          ...model.academicOffer,
+          pending: kind,
+          ...(query ?? model.academicOffer.query
+            ? { query: query ?? model.academicOffer.query! }
+            : {}),
+        };
     model = {
       ...model,
-      academicOffer: {
-        ...model.academicOffer,
-        pending: kind,
-        ...(query ?? model.academicOffer.query
-          ? { query: query ?? model.academicOffer.query! }
-          : {}),
-      },
+      academicOffer,
     };
     if (offerTimeout !== undefined) window.clearTimeout(offerTimeout);
     offerTimeout = window.setTimeout(() => {
@@ -99,15 +160,23 @@ function start(): void {
 
   const beginOfferLookupOperation = (kind: AcademicOfferLookupPending, query?: string): void => {
     const previousLookup = model.academicOffer.lookup ?? { state: "initial" as const, options: [] };
+    const lookup = kind === "searching"
+      ? {
+          state: "initial" as const,
+          options: [],
+          pending: kind,
+          ...(query ? { query } : {}),
+        }
+      : {
+          ...previousLookup,
+          pending: kind,
+          ...(query ?? previousLookup.query ? { query: query ?? previousLookup.query! } : {}),
+        };
     model = {
       ...model,
       academicOffer: {
         ...model.academicOffer,
-        lookup: {
-          ...previousLookup,
-          pending: kind,
-          ...(query ?? previousLookup.query ? { query: query ?? previousLookup.query! } : {}),
-        },
+        lookup,
       },
     };
     if (offerLookupTimeout !== undefined) window.clearTimeout(offerLookupTimeout);
@@ -155,11 +224,73 @@ function start(): void {
       if (result !== "activated") cancelOfferOperation(previous);
       return result;
     },
+    onOpenRegistrationWindow: async () => {
+      const previous = model.registrationWindow;
+      model = {
+        ...model,
+        registrationWindow: { ...previous, pending: "opening" },
+      };
+      shell.update(model);
+      const result = await navigator.openRegistrationWindow();
+      if (result !== "activated") {
+        model = { ...model, registrationWindow: previous };
+        shell.update(model);
+        return result;
+      }
+      if (registrationWindowTimeout !== undefined) {
+        window.clearTimeout(registrationWindowTimeout);
+      }
+      registrationWindowTimeout = window.setTimeout(() => {
+        registrationWindowTimeout = undefined;
+        model = { ...model, registrationWindow: { state: "unknown" } };
+        shell.update(model);
+      }, 45_000);
+      return result;
+    },
+    onOpenWebPayments: async () => {
+      const previous = model.webPayments;
+      model = { ...model, webPayments: { ...previous, pending: "opening" } };
+      shell.update(model);
+      const result = await financialNavigator.openWebPayments();
+      if (result !== "activated") {
+        model = { ...model, webPayments: previous };
+        shell.update(model);
+        return result;
+      }
+      if (webPaymentsTimeout !== undefined) window.clearTimeout(webPaymentsTimeout);
+      webPaymentsTimeout = window.setTimeout(() => {
+        webPaymentsTimeout = undefined;
+        model = { ...model, webPayments: { state: "unknown" } };
+        shell.update(model);
+      }, 45_000);
+      return result;
+    },
+    onOpenWebPaymentMessages: () => financialNavigator.openMessages(),
     onSearchAcademicOffer: async (code) => {
+      const requestId = ++offerRequestId;
       const previous = model.academicOffer;
       beginOfferOperation("searching", code);
       const result = await offerController.search(code);
-      if (result !== "activated") cancelOfferOperation(previous);
+      if (requestId !== offerRequestId) return result;
+      if (result !== "activated") {
+        cancelOfferOperation(previous);
+      } else {
+        const hydration = await offerController.hydrateSearchResults();
+        if (requestId !== offerRequestId || hydration.status === "stale") return result;
+        if (offerTimeout !== undefined) window.clearTimeout(offerTimeout);
+        offerTimeout = undefined;
+        model = {
+          ...model,
+          academicOffer: {
+            ...hydration.offer,
+            ...(hydration.offer.state === "results" || hydration.offer.state === "empty"
+              ? { query: code }
+              : {}),
+            ...(model.academicOffer.lookup ? { lookup: model.academicOffer.lookup } : {}),
+          },
+        };
+        shell.update(model);
+      }
       return result;
     },
     onOpenAcademicOfferLookup: async () => {
@@ -170,15 +301,58 @@ function start(): void {
       return result;
     },
     onSearchAcademicOfferLookup: async (query) => {
+      const requestId = ++offerLookupRequestId;
       const previous = model.academicOffer;
       beginOfferLookupOperation("searching", query);
       const result = await offerController.searchLookup(query);
-      if (result !== "activated") cancelOfferLookupOperation(previous);
+      if (requestId !== offerLookupRequestId) return result;
+      if (result !== "activated") {
+        cancelOfferLookupOperation(previous);
+      } else {
+        const hydration = await offerController.hydrateLookupResults();
+        if (requestId !== offerLookupRequestId || hydration.status === "stale") return result;
+        if (offerLookupTimeout !== undefined) window.clearTimeout(offerLookupTimeout);
+        offerLookupTimeout = undefined;
+        const state = hydration.options.length > 0
+          ? "results" as const
+          : hydration.status === "empty"
+            ? "empty" as const
+            : "unknown" as const;
+        model = {
+          ...model,
+          academicOffer: {
+            ...model.academicOffer,
+            lookup: { state, query, options: hydration.options },
+          },
+        };
+        shell.update(model);
+      }
       return result;
     },
     onSelectAcademicOfferLookup: async (selection) => {
+      const requestId = ++offerRequestId;
+      const previous = model.academicOffer;
       const result = await offerController.selectLookup(selection);
-      if (result === "activated") beginOfferOperation("searching", selection.code);
+      if (requestId !== offerRequestId) return result;
+      if (result !== "activated") return result;
+      beginOfferOperation("searching", selection.code);
+      const hydration = await offerController.hydrateSearchResults();
+      if (requestId !== offerRequestId || hydration.status === "stale") return result;
+      if (hydration.status === "not-found") {
+        cancelOfferOperation(previous);
+        return result;
+      }
+      if (offerTimeout !== undefined) window.clearTimeout(offerTimeout);
+      offerTimeout = undefined;
+      model = {
+        ...model,
+        academicOffer: {
+          ...hydration.offer,
+          query: selection.code,
+          ...(previous.lookup ? { lookup: previous.lookup } : {}),
+        },
+      };
+      shell.update(model);
       return result;
     },
     onCloseAcademicOfferLookup: async () => {
@@ -203,7 +377,9 @@ function start(): void {
       return Promise.resolve(result);
     },
   });
-  const registry = new FrameRegistry(document, ({ applications, academicHistory, academicOffer }) => {
+  const registry = new FrameRegistry(
+    document,
+    ({ portalState, applications, academicHistory, academicOffer, registrationWindow, webPayments }) => {
     const hasPeriodSurface = academicHistory.state === "results" || academicHistory.state === "empty";
     const periods = hasPeriodSurface ? periodController.discover() : [];
     const activePeriod = periods.find((period) => period.active);
@@ -231,14 +407,38 @@ function start(): void {
       window.clearTimeout(offerLookupTimeout);
       offerLookupTimeout = undefined;
     }
+    const coordinatedRegistrationWindow = model.registrationWindow.pending
+      && registrationWindow.state !== "results"
+      ? model.registrationWindow
+      : registrationWindow;
+    if (!coordinatedRegistrationWindow.pending && registrationWindowTimeout !== undefined) {
+      window.clearTimeout(registrationWindowTimeout);
+      registrationWindowTimeout = undefined;
+    }
+    const bridgedPayments = readBridgedWebPayments();
+    const observedWebPayments = webPaymentsPriority(bridgedPayments) > webPaymentsPriority(webPayments)
+      ? bridgedPayments
+      : webPayments;
+    const coordinatedWebPayments = model.webPayments.pending
+      && observedWebPayments.state !== "results"
+      ? model.webPayments
+      : observedWebPayments;
+    if (!coordinatedWebPayments.pending && webPaymentsTimeout !== undefined) {
+      window.clearTimeout(webPaymentsTimeout);
+      webPaymentsTimeout = undefined;
+    }
     model = {
       ...model,
+      portalState,
       applications,
       academicHistory: coordinatedHistory,
       academicOffer: coordinatedOffer,
+      registrationWindow: coordinatedRegistrationWindow,
+      webPayments: coordinatedWebPayments,
     };
     shell.update(model);
-  });
+    },
+  );
 
   if (detection.kind === "portal-shell") registry.start();
 
@@ -249,14 +449,27 @@ function start(): void {
       if (historyTimeout !== undefined) window.clearTimeout(historyTimeout);
       if (offerTimeout !== undefined) window.clearTimeout(offerTimeout);
       if (offerLookupTimeout !== undefined) window.clearTimeout(offerLookupTimeout);
+      if (registrationWindowTimeout !== undefined) window.clearTimeout(registrationWindowTimeout);
+      if (webPaymentsTimeout !== undefined) window.clearTimeout(webPaymentsTimeout);
+      window.removeEventListener("message", onFrameMessage);
+      stopRuntimePayments();
+      bridgedWebPayments.clear();
       shell.dispose();
     },
     { once: true },
   );
 }
 
-try {
-  start();
-} catch {
-  // Fail open: leave the original SAP interface untouched and do not log session context.
+function webPaymentsPriority(model: WebPaymentsModel): number {
+  return model.state === "results" ? 3 : model.state === "unknown" ? 2 : 1;
+}
+
+if (window.top !== window) {
+  startWebPaymentsFramePublisher(window, document, publishWebPaymentsRuntime);
+} else {
+  try {
+    start();
+  } catch {
+    // Fail open: leave the original SAP interface untouched and do not log session context.
+  }
 }
