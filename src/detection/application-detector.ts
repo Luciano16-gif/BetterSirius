@@ -32,9 +32,10 @@ export function detectApplication(
   const title = normalizedText(document.title);
   const semanticSource = `${title} ${text}`;
 
-  const application =
-    pathHint ??
-    detectBySemantics(semanticSource);
+  const semanticApplication = detectBySemantics(semanticSource);
+  const application = semanticApplication === "registration-window"
+    ? semanticApplication
+    : pathHint ?? semanticApplication;
 
   if (!application) return null;
 
@@ -46,6 +47,15 @@ export function detectApplication(
 }
 
 function detectBySemantics(source: string): SupportedApplication | null {
+  if (source.includes("web de pagos")
+    && (source.includes("saldo total a la fecha")
+      || source.includes("total de la deuda bolivares")
+      || source.includes("no tiene pagos pendientes"))) return "web-payments";
+  if (source.includes("turno de inscripcion")
+    || (source.includes("fecha de inicio")
+      && source.includes("fecha final")
+      && source.includes("de hora")
+      && source.includes("a hora"))) return "registration-window";
   if (source.includes("calificaciones historicas") || source.includes("historial academico")) {
     return "historical-grades";
   }
@@ -82,6 +92,17 @@ function detectApplicationState(
           && headers.some((header) => header === "horario" || header === "cupo")) return "results";
       }
       if (text.includes("codigo") && text.includes("buscar")) return "initial";
+      return "unknown";
+    case "registration-window":
+      if (text.includes("fecha de inicio")
+        && text.includes("fecha final")
+        && text.includes("de hora")
+        && text.includes("a hora")) return "results";
+      return "unknown";
+    case "web-payments":
+      if (text.includes("saldo total a la fecha")
+        && text.includes("total dolares")
+        && text.includes("total de la deuda bolivares")) return "results";
       return "unknown";
     case "registration":
       if (text.includes("seleccion del plan") || text.includes("continuar")) return "initial";

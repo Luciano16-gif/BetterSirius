@@ -13,6 +13,23 @@ const readyModel: ShellModel = {
     courses: [{ period: "2026-S1", code: "SYN-204", name: "Materia sintética", grade: "A", approvedCredits: "4" }],
   },
   academicOffer: { state: "initial", offerings: [] },
+  registrationWindow: {
+    state: "results",
+    startDate: "31.08.2099",
+    startTime: "19:00:00",
+    endDate: "01.09.2099",
+    endTime: "24:00:00",
+  },
+  webPayments: {
+    state: "results",
+    balanceAtDate: "125,00",
+    zellePayment: "25,00",
+    totalDollars: "100,00",
+    totalDebtBolivars: "9.999,99",
+    noPendingPayments: false,
+    messageCount: 2,
+    messageListAvailable: true,
+  },
 };
 
 afterEach(() => {
@@ -93,7 +110,7 @@ describe("responsive shell", () => {
         (group) => !group.open,
       ),
     ).toBe(true);
-    expect(panel?.querySelectorAll(".process-row-action")).toHaveLength(3);
+    expect(panel?.querySelectorAll(".process-row-action")).toHaveLength(4);
     expect(panel?.textContent).toContain("Matrícula Pregrado");
     expect(panel?.textContent).toContain("Horario del Estudiante Completo");
     expect(panel?.textContent).toContain("Consultas y Solicitudes");
@@ -120,6 +137,41 @@ describe("responsive shell", () => {
     expect(shadow?.querySelector<HTMLElement>("[data-panel='offer']")?.hidden).toBe(false);
     expect(search).toHaveBeenCalledOnce();
     expect(search).toHaveBeenCalledWith("SYN100");
+    controller.dispose();
+  });
+
+  it("opens Turno de Inscripción and renders its read-only schedule", () => {
+    const controller = mountBetterSiriusShell(document, readyModel);
+    const shadow = document.getElementById(SHELL_HOST_ID)?.shadowRoot;
+
+    shadow?.querySelector<HTMLButtonElement>("[data-view='academic']")?.click();
+    shadow?.querySelector<HTMLButtonElement>("[data-open-registration-window]")?.click();
+
+    const panel = shadow?.querySelector<HTMLElement>("[data-panel='registration-window']");
+    expect(panel?.hidden).toBe(false);
+    expect(panel?.textContent).toContain("31.08.2099");
+    expect(panel?.textContent).toContain("19:00:00");
+    expect(panel?.textContent).toContain("01.09.2099");
+    expect(panel?.textContent).toContain("24:00:00");
+    expect(panel?.querySelector("form, input, select")).toBeNull();
+    controller.dispose();
+  });
+
+  it("delegates one explicit navigation when Turno de Inscripción is unavailable", async () => {
+    const action = vi.fn().mockResolvedValue("activated" as const);
+    const controller = mountBetterSiriusShell(
+      document,
+      { ...readyModel, registrationWindow: { state: "unavailable" } },
+      { onOpenRegistrationWindow: action },
+    );
+    const shadow = document.getElementById(SHELL_HOST_ID)?.shadowRoot;
+
+    shadow?.querySelector<HTMLButtonElement>("[data-view='academic']")?.click();
+    shadow?.querySelector<HTMLButtonElement>("[data-open-registration-window]")?.click();
+    await Promise.resolve();
+
+    expect(action).toHaveBeenCalledOnce();
+    expect(shadow?.querySelector<HTMLElement>("[data-panel='registration-window']")?.hidden).toBe(false);
     controller.dispose();
   });
 
@@ -183,6 +235,56 @@ describe("responsive shell", () => {
       name: "Electiva sintética de cultura",
     });
     controller.dispose();
+  });
+
+  it("smoothly reveals newly loaded sections after choosing a lookup result", async () => {
+    const scrollIntoView = vi.fn();
+    const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+    const originalRequestAnimationFrame = window.requestAnimationFrame;
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    window.requestAnimationFrame = (callback: FrameRequestCallback): number => {
+      callback(0);
+      return 1;
+    };
+    try {
+      const selectLookup = vi.fn().mockResolvedValue("activated" as const);
+      const controller = mountBetterSiriusShell(
+        document,
+        {
+          ...readyModel,
+          academicOffer: {
+            state: "initial",
+            offerings: [],
+            lookup: {
+              state: "results",
+              query: "FGE",
+              options: [{ index: 0, code: "SYN-FGE-01", name: "Electiva sintética" }],
+            },
+          },
+        },
+        { onSelectAcademicOfferLookup: selectLookup },
+      );
+      const shadow = document.getElementById(SHELL_HOST_ID)?.shadowRoot;
+      shadow?.querySelector<HTMLButtonElement>("[data-open-academic-offer]")?.click();
+      shadow?.querySelector<HTMLButtonElement>("[data-offer-lookup-option]")?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      controller.update({
+        ...readyModel,
+        academicOffer: {
+          state: "results",
+          query: "SYN-FGE-01",
+          offerings: [{ code: "SYN-FGE-01", name: "Electiva sintética", schedule: "Lu-08:00-10:00" }],
+        },
+      });
+
+      expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "start" });
+      controller.dispose();
+    } finally {
+      HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
+      window.requestAnimationFrame = originalRequestAnimationFrame;
+    }
   });
 
   it("clears the academic-offer navigation message after Sirius accepts the route", async () => {
@@ -595,6 +697,66 @@ describe("responsive shell", () => {
     controller.dispose();
   });
 
+  it("opens Web de Pagos from the home shortcut with one explicit action", async () => {
+    const open = vi.fn().mockResolvedValue("activated" as const);
+    const controller = mountBetterSiriusShell(
+      document,
+      { ...readyModel, webPayments: { state: "unavailable" } },
+      { onOpenWebPayments: open },
+    );
+    const shadow = document.getElementById(SHELL_HOST_ID)?.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>("[data-panel='home'] [data-open-web-payments]")?.click();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(open).toHaveBeenCalledOnce();
+    expect(shadow?.querySelector<HTMLElement>("[data-panel='payments']")?.hidden).toBe(false);
+    controller.dispose();
+  });
+
+  it("renders the financial summary as a read-only responsive view", () => {
+    const controller = mountBetterSiriusShell(document, readyModel);
+    const shadow = document.getElementById(SHELL_HOST_ID)?.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>("[data-open-web-payments]")?.click();
+    const panel = shadow?.querySelector<HTMLElement>("[data-panel='payments']");
+
+    expect(panel?.textContent).toContain("Saldo total a la fecha");
+    expect(panel?.textContent).toContain("125,00");
+    expect(panel?.textContent).toContain("Pago en Zelle");
+    expect(panel?.textContent).toContain("Total dólares");
+    expect(panel?.textContent).toContain("Deuda en bolívares (BCV)");
+    expect(panel?.textContent).toContain("2 mensajes");
+    expect(panel?.querySelector("form, input, select")).toBeNull();
+    controller.dispose();
+  });
+
+  it("opens the native message list and reveals the untouched Sirius UI", async () => {
+    const openMessages = vi.fn().mockResolvedValue("activated" as const);
+    const controller = mountBetterSiriusShell(
+      document,
+      readyModel,
+      { onOpenWebPaymentMessages: openMessages },
+    );
+    const host = document.getElementById(SHELL_HOST_ID) as HTMLElement;
+    const shadow = host.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>("[data-open-web-payments]")?.click();
+    shadow?.querySelector<HTMLButtonElement>("[data-open-payment-messages]")?.click();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(openMessages).toHaveBeenCalledOnce();
+    expect(host.dataset.mode).toBe("original");
+    controller.dispose();
+  });
+
+  it("keeps payments in the three-item mobile navigation", () => {
+    const controller = mountBetterSiriusShell(document, readyModel);
+    const style = document.getElementById(SHELL_HOST_ID)?.shadowRoot?.querySelector("style")?.textContent;
+    expect(style).toContain(".navigation { grid-template-columns: repeat(3, 1fr)");
+    expect(style).toContain(".payments-summary { grid-template-columns: 1fr");
+    controller.dispose();
+  });
+
   it("renders explicit failure states without retry controls", () => {
     const controller = mountBetterSiriusShell(document, {
       portalState: "sap-error",
@@ -602,6 +764,8 @@ describe("responsive shell", () => {
       academicProcesses: academicProcessCatalog(),
       academicHistory: { state: "unavailable", courses: [] },
       academicOffer: { state: "unavailable", offerings: [] },
+      registrationWindow: { state: "unavailable" },
+      webPayments: { state: "unavailable" },
     });
     const text = document.getElementById(SHELL_HOST_ID)?.shadowRoot?.textContent ?? "";
 

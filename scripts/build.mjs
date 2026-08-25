@@ -20,20 +20,36 @@ await build({
   legalComments: "inline",
 });
 
+await build({
+  entryPoints: [resolve(root, "src/background/index.ts")],
+  outfile: resolve(outputDirectory, "background.js"),
+  bundle: true,
+  format: "iife",
+  platform: "browser",
+  target: ["chrome120"],
+  sourcemap: false,
+  minify: false,
+  legalComments: "inline",
+});
+
 await cp(resolve(root, "public/manifest.json"), resolve(outputDirectory, "manifest.json"));
 
 const manifest = JSON.parse(await readFile(resolve(outputDirectory, "manifest.json"), "utf8"));
-const allowedPattern = "http://sirius.unimet.edu.ve/irj/*";
+const allowedPatterns = [
+  "http://sirius.unimet.edu.ve/*",
+  "http://sappro2.unimet.edu.ve/*",
+];
 
 if (
   manifest.permissions.length !== 0 ||
-  manifest.host_permissions.length !== 1 ||
-  manifest.host_permissions[0] !== allowedPattern ||
-  manifest.content_scripts[0]?.matches?.length !== 1 ||
-  manifest.content_scripts[0].matches[0] !== allowedPattern
+  JSON.stringify(manifest.host_permissions) !== JSON.stringify(allowedPatterns) ||
+  JSON.stringify(manifest.content_scripts[0]?.matches) !== JSON.stringify(allowedPatterns) ||
+  manifest.content_scripts[0]?.all_frames !== true ||
+  manifest.content_scripts[0]?.match_about_blank !== true ||
+  manifest.content_scripts[0]?.match_origin_as_fallback !== true
+  || manifest.background?.service_worker !== "background.js"
 ) {
   throw new Error("Manifest safety check failed: Sirius must be the only allowed host.");
 }
 
 console.log("Built BetterSirius in dist/ with the Sirius-only manifest policy.");
-

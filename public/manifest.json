@@ -5,20 +5,26 @@
   "description": "A responsive, read-only interface layer for UNIMET Sirius.",
   "permissions": [],
   "host_permissions": [
-    "http://sirius.unimet.edu.ve/irj/*"
+    "http://sirius.unimet.edu.ve/*",
+    "http://sappro2.unimet.edu.ve/*"
   ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "content_scripts": [
     {
       "matches": [
-        "http://sirius.unimet.edu.ve/irj/*"
+        "http://sirius.unimet.edu.ve/*",
+        "http://sappro2.unimet.edu.ve/*"
       ],
       "js": ["content.js"],
       "run_at": "document_idle",
-      "all_frames": false
+      "all_frames": true,
+      "match_about_blank": true,
+      "match_origin_as_fallback": true
     }
   ],
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'none'"
   }
 }
-

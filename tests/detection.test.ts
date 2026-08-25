@@ -20,6 +20,14 @@ describe("portal detection", () => {
     const unknown = new DOMParser().parseFromString("<main>Unrelated page</main>", "text/html");
     expect(detectPortalSurface(unknown)).toMatchObject({ kind: "unsupported", confidence: 0 });
   });
+
+  it("recognizes Sirius HTTP 505 responses as recoverable SAP errors", () => {
+    const error = new DOMParser().parseFromString(
+      "<title>Error 505</title><main>HTTP Error 505</main>",
+      "text/html",
+    );
+    expect(detectPortalSurface(error)).toMatchObject({ kind: "sap-error" });
+  });
 });
 
 describe("application detection", () => {
@@ -27,6 +35,8 @@ describe("application detection", () => {
     ["historical-grades-initial.html", "historical-grades", "initial"],
     ["historical-grades-results.html", "historical-grades", "results"],
     ["academic-offer-initial.html", "academic-offer", "initial"],
+    ["registration-window-results.html", "registration-window", "results"],
+    ["web-payments-results.html", "web-payments", "results"],
     ["registration-initial.html", "registration", "initial"],
   ] as const)("recognizes %s without generated SAP IDs", (fixture, application, state) => {
     expect(detectApplication(fixtureDocument(fixture))).toMatchObject({ application, state });
@@ -41,6 +51,12 @@ describe("application detection", () => {
     ).toBe("academic-offer");
   });
 
+  it("prefers the specific registration-window semantics over a generic registration path hint", () => {
+    expect(
+      detectApplication(fixtureDocument("registration-window-results.html"), "registration"),
+    ).toMatchObject({ application: "registration-window", state: "results" });
+  });
+
   it("does not inspect application paths on a third-party origin", () => {
     expect(
       applicationFromUrl(
@@ -50,4 +66,3 @@ describe("application detection", () => {
     ).toBeNull();
   });
 });
-

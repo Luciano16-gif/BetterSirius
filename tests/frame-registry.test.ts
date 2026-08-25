@@ -58,6 +58,35 @@ describe("frame registry", () => {
     registry.stop();
   });
 
+  it("publishes and clears a recoverable SAP error from a child document", async () => {
+    const listener = vi.fn<(snapshot: RegistrySnapshot) => void>();
+    const frame = document.createElement("iframe");
+    frame.src = "/sap/bc/webdynpro/sap/zweb_oferta_1";
+    document.body.append(frame);
+    const frameDocument = frame.contentDocument;
+    if (!frameDocument) throw new Error("Synthetic iframe document was not created.");
+    const body = frameDocument.createElement("body");
+    if (frameDocument.documentElement) frameDocument.documentElement.append(body);
+    else {
+      const html = frameDocument.createElement("html");
+      html.append(body);
+      frameDocument.append(html);
+    }
+    frameDocument.title = "Error 505";
+    body.innerHTML = "<main>HTTP Error 505</main>";
+
+    const registry = new FrameRegistry(document, listener);
+    registry.start();
+    expect(listener.mock.lastCall?.[0].portalState).toBe("sap-error");
+
+    frameDocument.title = "Oferta Académica";
+    body.innerHTML = "<main>Oferta Académica</main>";
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(listener.mock.lastCall?.[0].portalState).toBe("portal-shell");
+    registry.stop();
+  });
+
   it("publishes normalized academic history and follows passive DOM updates", async () => {
     const listener = vi.fn<(snapshot: RegistrySnapshot) => void>();
     const frame = document.createElement("iframe");
@@ -131,6 +160,65 @@ describe("frame registry", () => {
         schedules: ["LU 08:00"],
         capacity: "24",
       }],
+    });
+    registry.stop();
+  });
+
+  it("publishes a normalized registration window without identity fields", () => {
+    const listener = vi.fn<(snapshot: RegistrySnapshot) => void>();
+    const frame = document.createElement("iframe");
+    document.body.append(frame);
+    const frameDocument = frame.contentDocument;
+    if (!frameDocument) throw new Error("Synthetic iframe document was not created.");
+    frameDocument.title = "Turno de Inscripción";
+    const body = frameDocument.body;
+    if (!body) throw new Error("Synthetic iframe body was not created.");
+    body.innerHTML = `
+      <h1>Turno de Inscripción</h1>
+      <p>Fecha de inicio: 31.08.2099</p><p>Fecha final: 01.09.2099</p>
+      <p>De hora: 19:00:00</p><p>A hora: 24:00:00</p>`;
+
+    const registry = new FrameRegistry(document, listener);
+    registry.start();
+
+    expect(listener.mock.lastCall?.[0].registrationWindow).toEqual({
+      state: "results",
+      startDate: "31.08.2099",
+      startTime: "19:00:00",
+      endDate: "01.09.2099",
+      endTime: "24:00:00",
+    });
+    registry.stop();
+  });
+
+  it("publishes the Web de Pagos summary without identity or payment controls", () => {
+    const listener = vi.fn<(snapshot: RegistrySnapshot) => void>();
+    const frame = document.createElement("iframe");
+    document.body.append(frame);
+    const frameDocument = frame.contentDocument;
+    if (!frameDocument) throw new Error("Synthetic iframe document was not created.");
+    frameDocument.title = "Web de Pagos";
+    frameDocument.body.innerHTML = `
+      <h1>Web de Pagos</h1>
+      <p>Ud. No tiene pagos pendientes</p>
+      <p>1 mensaje</p><button>Visualizar lista</button>
+      <p>Saldo total a la fecha 10,00</p>
+      <p>Pago en Zelle 2,00</p>
+      <p>Total Dólares 8,00</p>
+      <p>Total de la deuda Bolívares (BCV) 800,00</p>`;
+
+    const registry = new FrameRegistry(document, listener);
+    registry.start();
+
+    expect(listener.mock.lastCall?.[0].webPayments).toEqual({
+      state: "results",
+      balanceAtDate: "10,00",
+      zellePayment: "2,00",
+      totalDollars: "8,00",
+      totalDebtBolivars: "800,00",
+      noPendingPayments: true,
+      messageCount: 1,
+      messageListAvailable: true,
     });
     registry.stop();
   });

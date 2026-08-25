@@ -8,6 +8,9 @@ import { normalizedText } from "../detection/text";
 
 type OfferingField = Exclude<keyof AcademicOffering, "schedules">;
 const LOOKUP_TRANSITION_TIMEOUT_MS = 20_000;
+const LOOKUP_SCROLL_SETTLE_MS = 1_500;
+const LOOKUP_SCROLL_STEP_DELAY_MS = 450;
+const LOOKUP_MAX_SCROLL_STEPS = 32;
 
 const HEADER_ALIASES: Readonly<Record<OfferingField, readonly string[]>> = {
   code: ["codigo", "codigo de asignatura", "cod asignatura"],
@@ -29,10 +32,43 @@ const HEADER_ALIASES: Readonly<Record<OfferingField, readonly string[]>> = {
 };
 
 export type AcademicOfferSearchResult = "activated" | "invalid" | "not-found" | "busy";
+export interface AcademicOfferHydrationResult {
+  readonly status: "complete" | "empty" | "not-found" | "stale";
+  readonly offer: AcademicOfferModel;
+}
+export interface AcademicOfferLookupHydrationResult {
+  readonly status: "expanded" | "complete" | "empty" | "not-found" | "stale";
+  readonly options: readonly AcademicOfferLookupOption[];
+}
+
+interface OfferRequest {
+  readonly generation: number;
+  readonly query: string;
+  readonly baselineDocument: Document;
+  readonly baselineState: AcademicOfferModel["state"];
+  readonly baselineSignature: string;
+  readonly observer: MutationObserver;
+  resultSurfaceChanged: boolean;
+}
+
+interface LookupRequest {
+  readonly generation: number;
+  readonly query: string;
+  readonly baselineDocument: Document;
+  readonly baselineQuery?: string;
+  readonly baselineState?: AcademicOfferLookupModel["state"];
+  readonly baselineSignature: string;
+  readonly observer: MutationObserver;
+  resultSurfaceChanged: boolean;
+}
 
 export class AcademicOfferController {
   readonly #rootDocument: Document;
   #busy = false;
+  #offerGeneration = 0;
+  #offerRequest: OfferRequest | undefined;
+  #lookupGeneration = 0;
+  #lookupRequest: LookupRequest | undefined;
 
   constructor(rootDocument: Document) {
     this.#rootDocument = rootDocument;
@@ -47,7 +83,13 @@ export class AcademicOfferController {
     try {
       const target = await ensureAcademicOfferControls(this.#rootDocument);
       if (!target) return "not-found";
-      return activateTextSearch(target, code) ? "activated" : "not-found";
+      this.#startOfferRequest(target.input.ownerDocument, code);
+      const activated = activateTextSearch(target, code);
+      if (!activated) {
+        this.#discardOfferRequest();
+        return "not-found";
+      }
+      return "activated";
     } finally {
       this.#busy = false;
     }
@@ -86,7 +128,36 @@ export class AcademicOfferController {
         target = await waitForLookupControls(this.#rootDocument);
       }
       if (!target) return "not-found";
-      return activateTextSearch(target, nativeLookupPattern(query)) ? "activated" : "not-found";
+      const lookupDocument = target.input.ownerDocument;
+      const baseline = readAcademicOfferLookup([lookupDocument]);
+      this.#discardLookupRequest();
+      const generation = ++this.#lookupGeneration;
+      const request: LookupRequest = {
+        generation,
+        query,
+        baselineDocument: lookupDocument,
+        ...(baseline?.query ? { baselineQuery: baseline.query } : {}),
+        ...(baseline?.state ? { baselineState: baseline.state } : {}),
+        baselineSignature: baseline?.state === "results"
+          ? lookupOptionsSignature(baseline.options)
+          : "",
+        observer: new MutationObserver((mutations) => {
+          if (mutations.some(mutationTouchesLookupResults)) request.resultSurfaceChanged = true;
+        }),
+        resultSurfaceChanged: false,
+      };
+      request.observer.observe(lookupDocument.documentElement, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+      });
+      this.#lookupRequest = request;
+      const activated = activateTextSearch(target, nativeLookupPattern(query));
+      if (!activated) {
+        this.#discardLookupRequest(request);
+        return "not-found";
+      }
+      return "activated";
     } finally {
       this.#busy = false;
     }
@@ -109,9 +180,100 @@ export class AcademicOfferController {
       }
       const target = await ensureAcademicOfferControls(this.#rootDocument);
       if (!target) return "not-found";
-      return activateTextSearch(target, normalizedCode) ? "activated" : "not-found";
+      this.#startOfferRequest(target.input.ownerDocument, normalizedCode);
+      const activated = activateTextSearch(target, normalizedCode);
+      if (!activated) {
+        this.#discardOfferRequest();
+        return "not-found";
+      }
+      return "activated";
     } finally {
       this.#busy = false;
+    }
+  }
+
+  async hydrateSearchResults(): Promise<AcademicOfferHydrationResult> {
+    const request = this.#offerRequest;
+    if (!request) {
+      return { status: "not-found", offer: { state: "unknown", offerings: [] } };
+    }
+    try {
+      const fresh = await waitForFreshOfferResults(
+        this.#rootDocument,
+        request,
+        () => this.#offerGeneration,
+      );
+      if (fresh?.status === "stale") {
+        return { status: "stale", offer: { state: "unknown", offerings: [] } };
+      }
+      if (!fresh) return { status: "not-found", offer: { state: "unknown", offerings: [] } };
+      const offer = readAcademicOffer(fresh.document);
+      return offer.state === "empty"
+        ? { status: "empty", offer }
+        : { status: "complete", offer };
+    } finally {
+      this.#discardOfferRequest(request);
+    }
+  }
+
+  async hydrateLookupResults(): Promise<AcademicOfferLookupHydrationResult> {
+    const request = this.#lookupRequest;
+    try {
+      const fresh = request
+        ? await waitForFreshLookupResults(this.#rootDocument, request, () => this.#lookupGeneration)
+        : undefined;
+      if (fresh?.status === "stale") return { status: "stale", options: [] };
+      const lookupDocument = fresh?.document ?? await waitForLookupResults(this.#rootDocument);
+      if (!lookupDocument) return { status: "not-found", options: [] };
+      if (request && request.generation !== this.#lookupGeneration) {
+        return { status: "stale", options: [] };
+      }
+      const initial = readAcademicOfferLookup([lookupDocument]);
+      if (initial?.state === "empty") return { status: "empty", options: [] };
+      if (initial?.state !== "results") return { status: "not-found", options: [] };
+      const scroller = locateLookupScrollContainer(lookupDocument);
+      const pageAction = locateLookupPageAction(lookupDocument);
+      if (!scroller && !pageAction) return { status: "complete", options: initial.options };
+
+      const discovered = new Map(initial.options.map((option) => [lookupOptionKey(option), option]));
+      let signature = lookupOptionsSignature(initial.options);
+      let expanded = false;
+      let unchanged = 0;
+      for (let step = 0; step < LOOKUP_MAX_SCROLL_STEPS; step += 1) {
+        if (request && request.generation !== this.#lookupGeneration) {
+          return { status: "stale", options: [] };
+        }
+        if (pageAction) {
+          activateLookupPage(pageAction);
+        } else if (scroller) {
+          const maximum = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+          const increment = Math.max(1, Math.floor(scroller.clientHeight * 0.9));
+          scroller.scrollTop = Math.min(maximum, scroller.scrollTop + increment);
+          const view = scroller.ownerDocument.defaultView;
+          const EventConstructor = view?.Event ?? Event;
+          scroller.dispatchEvent(new EventConstructor("scroll", { bubbles: true }));
+        }
+
+        const nextLookup = await waitForLookupChange(lookupDocument, signature);
+        const nextSignature = nextLookup ? lookupOptionsSignature(nextLookup.options) : signature;
+        if (nextLookup && nextSignature !== signature) {
+          signature = nextSignature;
+          const previousSize = discovered.size;
+          nextLookup.options.forEach((option) => discovered.set(lookupOptionKey(option), option));
+          expanded ||= discovered.size > previousSize;
+          unchanged = 0;
+          await new Promise<void>((resolve) => setTimeout(resolve, LOOKUP_SCROLL_STEP_DELAY_MS));
+          continue;
+        }
+        unchanged += 1;
+        if (unchanged >= 2) break;
+      }
+      return {
+        status: expanded ? "expanded" : "complete",
+        options: Array.from(discovered.values(), (option, index) => ({ ...option, index })),
+      };
+    } finally {
+      if (request) this.#discardLookupRequest(request);
     }
   }
 
@@ -129,6 +291,41 @@ export class AcademicOfferController {
     } finally {
       this.#busy = false;
     }
+  }
+
+  #discardLookupRequest(request = this.#lookupRequest): void {
+    if (!request) return;
+    request.observer.disconnect();
+    if (this.#lookupRequest === request) this.#lookupRequest = undefined;
+  }
+
+  #startOfferRequest(document: Document, query: string): void {
+    this.#discardOfferRequest();
+    const baseline = readAcademicOffer(document);
+    const generation = ++this.#offerGeneration;
+    const request: OfferRequest = {
+      generation,
+      query,
+      baselineDocument: document,
+      baselineState: baseline.state,
+      baselineSignature: offeringSignature(baseline.offerings),
+      observer: new MutationObserver((mutations) => {
+        if (mutations.some(mutationTouchesOfferResults)) request.resultSurfaceChanged = true;
+      }),
+      resultSurfaceChanged: false,
+    };
+    request.observer.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
+    this.#offerRequest = request;
+  }
+
+  #discardOfferRequest(request = this.#offerRequest): void {
+    if (!request) return;
+    request.observer.disconnect();
+    if (this.#offerRequest === request) this.#offerRequest = undefined;
   }
 }
 
@@ -259,14 +456,25 @@ function readAcademicOfferLookup(documents: readonly Document[]): AcademicOfferL
   const options = deduplicateLookupOptions(compatibleReads.flatMap((read) =>
     read.entries.map((entry) => entry.option),
   ));
-  if (options.length > 0) return { state: "results", options };
+  const query = readLookupQuery(lookupDocument);
+  const queryPart = query ? { query } : {};
+  if (options.length > 0) return { state: "results", options, ...queryPart };
   if (compatibleReads.length > 0 && hasLookupEmptyMessage(lookupDocument)) {
-    return { state: "empty", options: [] };
+    return { state: "empty", options: [], ...queryPart };
   }
-  if (locateLookupControlsInDocument(lookupDocument)) return { state: "initial", options: [] };
+  if (locateLookupControlsInDocument(lookupDocument)) {
+    return { state: "initial", options: [], ...queryPart };
+  }
   return compatibleReads.length > 0
-    ? { state: "empty", options: [] }
-    : { state: "unknown", options: [] };
+    ? { state: "empty", options: [], ...queryPart }
+    : { state: "unknown", options: [], ...queryPart };
+}
+
+function readLookupQuery(document: Document): string | undefined {
+  const controls = locateLookupControlsInDocument(document);
+  if (!controls) return undefined;
+  const value = readInputText(controls.input).replace(/[?*]+$/g, "").trim();
+  return value || undefined;
 }
 
 function hasLookupEmptyMessage(document: Document): boolean {
@@ -601,6 +809,212 @@ async function waitForLookupControls(
     await new Promise<void>((resolve) => setTimeout(resolve, 100));
   } while (Date.now() < deadline);
   return null;
+}
+
+async function waitForFreshOfferResults(
+  rootDocument: Document,
+  request: OfferRequest,
+  currentGeneration: () => number,
+): Promise<{ readonly status: "fresh"; readonly document: Document }
+  | { readonly status: "stale" }
+  | null> {
+  const deadline = Date.now() + LOOKUP_TRANSITION_TIMEOUT_MS;
+  do {
+    if (request.generation !== currentGeneration()) return { status: "stale" };
+    const document = reachableDocuments(rootDocument)
+      .find((candidate) => isAcademicOfferDocument(candidate)
+        && !isAcademicOfferLookupDocument(candidate));
+    if (document) {
+      const offer = readAcademicOffer(document);
+      if (offer.state === "results" || offer.state === "empty") {
+        const signature = offeringSignature(offer.offerings);
+        const responseChanged = document !== request.baselineDocument
+          || offer.state !== request.baselineState
+          || signature !== request.baselineSignature
+          || request.resultSurfaceChanged;
+        if (responseChanged) return { status: "fresh", document };
+      }
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  } while (Date.now() < deadline);
+  return null;
+}
+
+function mutationTouchesOfferResults(mutation: MutationRecord): boolean {
+  const nodes = [mutation.target, ...mutation.addedNodes, ...mutation.removedNodes];
+  return nodes.some((node) => {
+    const element = node.nodeType === Node.ELEMENT_NODE ? node as Element : node.parentElement;
+    if (!element) return false;
+    const closestTable = element.closest("table");
+    if (closestTable && readOfferTable(closestTable as HTMLTableElement).compatible) return true;
+    return Array.from(element.querySelectorAll<HTMLTableElement>("table"))
+      .some((table) => readOfferTable(table).compatible);
+  });
+}
+
+function offeringSignature(offerings: readonly AcademicOffering[]): string {
+  return offerings.map((offering) => [
+    offering.code,
+    offering.name,
+    offering.block,
+    offering.schedule,
+    offering.capacity,
+  ].join("\u0000")).join("\u0001");
+}
+
+async function waitForLookupResults(rootDocument: Document): Promise<Document | null> {
+  const deadline = Date.now() + LOOKUP_TRANSITION_TIMEOUT_MS;
+  do {
+    const document = locateActiveLookupDocument(rootDocument);
+    if (document) {
+      const lookup = readAcademicOfferLookup([document]);
+      if (lookup?.state === "results" || lookup?.state === "empty") return document;
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  } while (Date.now() < deadline);
+  return null;
+}
+
+async function waitForFreshLookupResults(
+  rootDocument: Document,
+  request: LookupRequest,
+  currentGeneration: () => number,
+): Promise<{ readonly status: "fresh"; readonly document: Document }
+  | { readonly status: "stale" }> {
+  const deadline = Date.now() + LOOKUP_TRANSITION_TIMEOUT_MS;
+  do {
+    if (request.generation !== currentGeneration()) return { status: "stale" };
+    const document = locateActiveLookupDocument(rootDocument);
+    if (document) {
+      const lookup = readAcademicOfferLookup([document]);
+      if (lookup && (lookup.state === "results" || lookup.state === "empty")) {
+        const queryMatches = !lookup.query
+          || normalizeLookupIdentity(lookup.query) === normalizeLookupIdentity(request.query);
+        const signature = lookup.state === "results" ? lookupOptionsSignature(lookup.options) : "";
+        const responseChanged = document !== request.baselineDocument
+          || lookup.state !== request.baselineState
+          || signature !== request.baselineSignature
+          || request.resultSurfaceChanged
+          || normalizeLookupIdentity(request.baselineQuery) === normalizeLookupIdentity(request.query);
+        if (queryMatches && responseChanged) return { status: "fresh", document };
+      }
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  } while (Date.now() < deadline);
+  return { status: "stale" };
+}
+
+function mutationTouchesLookupResults(mutation: MutationRecord): boolean {
+  const nodes = [mutation.target, ...mutation.addedNodes, ...mutation.removedNodes];
+  return nodes.some((node) => {
+    const element = node.nodeType === Node.ELEMENT_NODE
+      ? node as Element
+      : node.parentElement;
+    if (!element) return false;
+    const closestTable = element.closest("table");
+    if (closestTable && readLookupTable(closestTable as HTMLTableElement).compatible) {
+      return true;
+    }
+    return Array.from(element.querySelectorAll<HTMLTableElement>("table"))
+      .some((table) => readLookupTable(table).compatible);
+  });
+}
+
+function normalizeLookupIdentity(value: string | undefined): string {
+  return normalizedText(value?.replace(/[?*]+$/g, ""));
+}
+
+function locateLookupScrollContainer(document: Document): HTMLElement | null {
+  const lookupTables = Array.from(document.querySelectorAll<HTMLTableElement>("table"))
+    .filter((table) => readLookupTable(table).compatible);
+  const candidates = new Set<HTMLElement>();
+  for (const table of lookupTables) {
+    let current = table.parentElement;
+    while (current && current !== document.body) {
+      if (current.scrollHeight > current.clientHeight + 1) candidates.add(current);
+      current = current.parentElement;
+    }
+  }
+  return Array.from(candidates).sort((left, right) => {
+    const leftRange = left.scrollHeight - left.clientHeight;
+    const rightRange = right.scrollHeight - right.clientHeight;
+    return leftRange - rightRange;
+  })[0] ?? null;
+}
+
+function locateLookupPageAction(document: Document): HTMLElement | null {
+  const lookupTables = Array.from(document.querySelectorAll<HTMLTableElement>("table"))
+    .filter((table) => readLookupTable(table).compatible);
+  for (const table of lookupTables) {
+    let grid: HTMLTableElement | null = table;
+    while (grid && !isLookupGrid(grid)) grid = grid.parentElement?.closest("table") ?? null;
+    let scope: HTMLElement | null = grid?.parentElement ?? null;
+    while (scope && scope !== document.body) {
+      const action = scope.querySelector<HTMLElement>(
+        ".lsScrollbar--vertical .lsScrollbar__track[acf='PNext'], .lsScrollbar--vertical [acf='PNext']",
+      );
+      if (action && isVisible(action)) return action;
+      scope = scope.parentElement;
+    }
+  }
+  return null;
+}
+
+function activateLookupPage(action: HTMLElement): void {
+  const view = action.ownerDocument.defaultView;
+  const MouseEventConstructor = view?.MouseEvent ?? MouseEvent;
+  const bounds = action.getBoundingClientRect();
+  const eventOptions: MouseEventInit = {
+    bubbles: true,
+    cancelable: true,
+    clientX: bounds.left + Math.max(1, bounds.width / 2),
+    clientY: bounds.top + Math.max(1, bounds.height - 2),
+    button: 0,
+    buttons: 1,
+  };
+  action.dispatchEvent(new MouseEventConstructor("mousedown", eventOptions));
+  action.dispatchEvent(new MouseEventConstructor("mouseup", { ...eventOptions, buttons: 0 }));
+  action.dispatchEvent(new MouseEventConstructor("click", { ...eventOptions, buttons: 0 }));
+}
+
+async function waitForLookupChange(
+  document: Document,
+  previousSignature: string,
+): Promise<AcademicOfferLookupModel | undefined> {
+  const read = (): AcademicOfferLookupModel | undefined => readAcademicOfferLookup([document]);
+  const changed = (): AcademicOfferLookupModel | undefined => {
+    const lookup = read();
+    return lookup?.state === "results" && lookupOptionsSignature(lookup.options) !== previousSignature
+      ? lookup
+      : undefined;
+  };
+  const immediate = changed();
+  if (immediate) return immediate;
+
+  return new Promise<AcademicOfferLookupModel | undefined>((resolve) => {
+    let settled = false;
+    const finish = (lookup?: AcademicOfferLookupModel): void => {
+      if (settled) return;
+      settled = true;
+      observer.disconnect();
+      clearTimeout(timeout);
+      resolve(lookup);
+    };
+    const observer = new MutationObserver(() => {
+      const lookup = changed();
+      if (lookup) finish(lookup);
+    });
+    observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+    const timeout = setTimeout(() => finish(), LOOKUP_SCROLL_SETTLE_MS);
+  });
+}
+
+function lookupOptionKey(option: AcademicOfferLookupOption): string {
+  return `${option.code}\u0000${option.name}`;
+}
+
+function lookupOptionsSignature(options: readonly AcademicOfferLookupOption[]): string {
+  return options.map(lookupOptionKey).join("\u0001");
 }
 
 function locateControlsInDocument(

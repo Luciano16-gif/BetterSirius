@@ -14,10 +14,17 @@ describe("runtime scope", () => {
   it("keeps the manifest minimal and host-restricted", async () => {
     const manifest = JSON.parse(await readFile(resolve("public/manifest.json"), "utf8"));
     expect(manifest.permissions).toEqual([]);
-    expect(manifest.host_permissions).toEqual(["http://sirius.unimet.edu.ve/irj/*"]);
+    const allowedHosts = [
+      "http://sirius.unimet.edu.ve/*",
+      "http://sappro2.unimet.edu.ve/*",
+    ];
+    expect(manifest.host_permissions).toEqual(allowedHosts);
     expect(manifest.content_scripts).toHaveLength(1);
-    expect(manifest.content_scripts[0].matches).toEqual(["http://sirius.unimet.edu.ve/irj/*"]);
-    expect(manifest.background).toBeUndefined();
+    expect(manifest.content_scripts[0].matches).toEqual(allowedHosts);
+    expect(manifest.content_scripts[0].all_frames).toBe(true);
+    expect(manifest.content_scripts[0].match_about_blank).toBe(true);
+    expect(manifest.content_scripts[0].match_origin_as_fallback).toBe(true);
+    expect(manifest.background).toEqual({ service_worker: "background.js" });
   });
 
   it("contains no network or form-submission primitives in extension source", async () => {
