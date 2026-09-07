@@ -769,7 +769,7 @@ describe("responsive shell", () => {
     });
     const text = document.getElementById(SHELL_HOST_ID)?.shadowRoot?.textContent ?? "";
 
-    expect(text).toContain("no hará reintentos automáticos");
+    expect(text).toContain("intentará reabrirla una vez");
     expect(text).not.toContain("Reintentar");
     controller.dispose();
   });

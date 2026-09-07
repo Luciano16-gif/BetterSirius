@@ -909,7 +909,6 @@ function renderAcademicHistory(
     return;
   }
 
-
   if (model.state === "initial" && model.programs?.length) {
     container.innerHTML = programChoicesMarkup(model.programs);
     return;
@@ -1067,6 +1066,21 @@ function renderAcademicOffer(root: ShadowRoot, model: AcademicOfferModel): void 
         <span class="empty-rule"></span>
         <h2>No hay oferta para ese código</h2>
         <p>Sirius respondió sin secciones disponibles. Prueba con otro código.</p>
+      </div>
+      ${lookup}`;
+    return;
+  }
+
+  if (model.state === "error") {
+    container.innerHTML = `
+      ${search}
+      <div class="offer-empty">
+        <span class="empty-rule"></span>
+        <h2>Sirius interrumpió la consulta</h2>
+        <p>Se intentó recuperar Oferta Académica una vez. Vuelve a abrirla para reintentar sin conservar resultados viejos.</p>
+        <button class="primary-action" type="button" data-open-academic-offer>
+          Reabrir Oferta Académica ${ICONS.arrow}
+        </button>
       </div>
       ${lookup}`;
     return;
@@ -1240,6 +1254,7 @@ function splitAcademicSchedule(schedule: string): { readonly day: string; readon
     lu: "Lunes",
     ma: "Martes",
     mi: "Miércoles",
+    "mié": "Miércoles",
     ju: "Jueves",
     vi: "Viernes",
     sa: "Sábado",
@@ -1375,7 +1390,7 @@ function portalStatus(state: ShellModel["portalState"]): {
   if (state === "sap-error") {
     return {
       title: "Sirius devolvió un error",
-      copy: "BetterSirius detuvo la lectura y no hará reintentos automáticos. La interfaz original sigue intacta.",
+      copy: "Si estabas consultando Oferta Académica, BetterSirius intentará reabrirla una vez. La interfaz original sigue intacta.",
       tone: "warning",
     };
   }

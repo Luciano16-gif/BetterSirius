@@ -87,6 +87,35 @@ describe("frame registry", () => {
     registry.stop();
   });
 
+  it("invalidates stale offer results while the active offer frame contains a server 500", () => {
+    const listener = vi.fn<(snapshot: RegistrySnapshot) => void>();
+    const staleFrame = document.createElement("iframe");
+    const errorFrame = document.createElement("iframe");
+    document.body.append(staleFrame, errorFrame);
+    const staleDocument = staleFrame.contentDocument;
+    const errorDocument = errorFrame.contentDocument;
+    if (!staleDocument || !errorDocument) throw new Error("Synthetic iframe documents are missing.");
+    const staleBody = staleDocument.createElement("body");
+    const errorBody = errorDocument.createElement("body");
+    staleDocument.documentElement?.append(staleBody);
+    errorDocument.documentElement?.append(errorBody);
+    staleDocument.title = "Oferta Académica";
+    staleBody.innerHTML = `
+      <table><tr><th>Código</th><th>Asignatura</th><th>Bloque</th><th>Horario</th><th>Cupo</th></tr>
+      <tr><td>OLD100</td><td>Resultado anterior</td><td>1</td><td>Lu 8:00</td><td>20</td></tr></table>`;
+    errorDocument.title = "Oferta Académica - 500 Internal Server Error";
+    errorBody.innerHTML = "<h1>Oferta Académica</h1><main>HTTP Status 500 - Internal Server Error</main>";
+
+    const registry = new FrameRegistry(document, listener);
+    registry.start();
+
+    expect(listener.mock.lastCall?.[0]).toMatchObject({
+      portalState: "sap-error",
+      academicOffer: { state: "error", offerings: [] },
+    });
+    registry.stop();
+  });
+
   it("publishes normalized academic history and follows passive DOM updates", async () => {
     const listener = vi.fn<(snapshot: RegistrySnapshot) => void>();
     const frame = document.createElement("iframe");

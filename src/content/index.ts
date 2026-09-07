@@ -53,7 +53,10 @@ function start(): void {
   const programController = new HistoryProgramController(document);
   const periodController = new HistoryPeriodController(document);
   const historyFlow = new AcademicHistoryFlow(model.academicHistory);
-  const offerController = new AcademicOfferController(document);
+  const offerController = new AcademicOfferController(
+    document,
+    () => navigator.openAcademicOffer(),
+  );
   let historyTimeout: number | undefined;
   let offerTimeout: number | undefined;
   let offerRequestId = 0;
@@ -321,7 +324,9 @@ function start(): void {
         model = {
           ...model,
           academicOffer: {
-            ...model.academicOffer,
+            ...(hydration.status === "error"
+              ? { state: "error" as const, offerings: [] }
+              : model.academicOffer),
             lookup: { state, query, options: hydration.options },
           },
         };
@@ -338,7 +343,7 @@ function start(): void {
       beginOfferOperation("searching", selection.code);
       const hydration = await offerController.hydrateSearchResults();
       if (requestId !== offerRequestId || hydration.status === "stale") return result;
-      if (hydration.status === "not-found") {
+      if (hydration.status === "not-found" && hydration.offer.state !== "error") {
         cancelOfferOperation(previous);
         return result;
       }

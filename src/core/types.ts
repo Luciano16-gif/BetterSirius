@@ -98,7 +98,7 @@ export interface AcademicHistoryModel {
 
 export type AcademicHistoryPending = "opening" | "program" | "period";
 
-export type AcademicOfferState = "unavailable" | "initial" | "results" | "empty" | "unknown";
+export type AcademicOfferState = "unavailable" | "initial" | "results" | "empty" | "error" | "unknown";
 export type AcademicOfferPending = "opening" | "searching";
 export type AcademicOfferLookupState = "initial" | "results" | "empty" | "unknown";
 export type AcademicOfferLookupPending = "opening" | "searching";

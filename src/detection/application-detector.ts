@@ -5,6 +5,7 @@ import type {
   SupportedApplication,
 } from "../core/types";
 import { documentText, normalizedText } from "./text";
+import { isSapErrorDocument } from "./portal-detector";
 
 const APPLICATION_BY_PATH: ReadonlyArray<readonly [string, SupportedApplication]> = [
   [APPLICATION_PATHS.historicalGrades, "historical-grades"],
@@ -74,7 +75,7 @@ function detectApplicationState(
   document: Document,
   text: string,
 ): ApplicationState {
-  if (text.includes("error de aplicacion") || text.includes("web dynpro: error")) return "error";
+  if (isSapErrorDocument(document)) return "error";
   if (text.includes("sin resultados") || text.includes("no se encontraron")) return "empty";
 
   switch (application) {

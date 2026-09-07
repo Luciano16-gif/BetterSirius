@@ -10,6 +10,29 @@ function resultDocumentWithoutSearchControls(): Document {
 }
 
 describe("academic offer", () => {
+  it("recovers immediately when returning from results produces a 500", async () => {
+    vi.useFakeTimers();
+    try {
+      const document = resultDocumentWithoutSearchControls();
+      const back = document.createElement("button");
+      back.textContent = "Regresar";
+      back.addEventListener("click", () => {
+        document.body.innerHTML = "<h1>500 Internal Server Error</h1>";
+      });
+      document.body.append(back);
+      const recover = vi.fn(async () => {
+        document.body.innerHTML = fixtureDocument("academic-offer-initial.html").body.innerHTML;
+        return "activated" as const;
+      });
+      const search = new AcademicOfferController(document, recover).search("FPTEN27");
+      await vi.advanceTimersByTimeAsync(200);
+      expect(recover).toHaveBeenCalledOnce();
+      await expect(search).resolves.toBe("activated");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("recognizes the verified initial search state", () => {
     expect(readAcademicOffer(fixtureDocument("academic-offer-initial.html"))).toEqual({
       state: "initial",
@@ -85,6 +108,42 @@ describe("academic offer", () => {
           prerequisite: "Matemática previa",
           prerequisiteCode: "SYN199",
           modality: "SYN200-P",
+          firstMonthCost: "0,00",
+        },
+      ],
+    });
+  });
+
+  it("keeps virtual schedule and capacity columns aligned in compressed continuation rows", () => {
+    expect(readAcademicOffer(fixtureDocument("academic-offer-virtual-results.html"))).toEqual({
+      state: "results",
+      offerings: [
+        {
+          code: "FPTSP15",
+          name: "INGENIERIA ECONOMICA",
+          credits: "3",
+          period: "12",
+          block: "FPTSP15-1",
+          blockDescription: "FPTSP15-1 SÍNCRONA VIE 5:30 a 7:00 pm",
+          schedule: "VIE 5:30 a 7:00 pm",
+          schedules: ["VIE 5:30 a 7:00 pm"],
+          capacity: "19",
+          prerequisite: "57 Crd asig BP Aprobados ó 150 Crd Apro",
+          modality: "FPTSP15-V",
+          firstMonthCost: "0,00",
+        },
+        {
+          code: "FPTSP15",
+          name: "INGENIERIA ECONOMICA",
+          credits: "3",
+          period: "12",
+          block: "FPTSP15-2",
+          blockDescription: "FPTSP15-2 SÍNCRONA MIÉ 5:30 a 7:00 pm",
+          schedule: "MIÉ 5:30 a 7:00 pm",
+          schedules: ["MIÉ 5:30 a 7:00 pm"],
+          capacity: "14",
+          prerequisite: "57 Crd asig BP Aprobados ó 150 Crd Apro",
+          modality: "FPTSP15-V",
           firstMonthCost: "0,00",
         },
       ],
@@ -182,6 +241,81 @@ describe("academic offer", () => {
           }],
         },
       });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reopens Oferta Académica and retries once after a server 500 response", async () => {
+    vi.useFakeTimers();
+    try {
+      const document = fixtureDocument("academic-offer-initial.html");
+      const firstSearch = document.querySelector<HTMLElement>(".lsButton");
+      if (!firstSearch) throw new Error("Synthetic offer search is missing.");
+      firstSearch.addEventListener("click", () => {
+        document.title = "500 Internal Server Error";
+        document.body.innerHTML = "<main>HTTP Status 500 - Internal Server Error</main>";
+      });
+
+      const recover = vi.fn(async () => {
+        document.title = "ZWEB_OFERTA_1 [Web Dynpro para ABAP]";
+        document.body.innerHTML = fixtureDocument("academic-offer-initial.html").body.innerHTML;
+        document.querySelector<HTMLElement>(".lsButton")?.addEventListener("click", () => {
+          document.body.innerHTML = `
+            <table>
+              <tr><th>Código</th><th>Asignatura</th><th>Bloque</th><th>Horario</th><th>Cupo</th></tr>
+              <tr><td>FPTSP15</td><td>INGENIERIA ECONOMICA</td><td>FPTSP15-1</td><td>Virtual</td><td>34</td></tr>
+            </table>`;
+        });
+        return "activated" as const;
+      });
+      const controller = new AcademicOfferController(document, recover);
+
+      await expect(controller.search("FPTSP15")).resolves.toBe("activated");
+      const hydration = controller.hydrateSearchResults();
+      await vi.runAllTimersAsync();
+
+      await expect(hydration).resolves.toMatchObject({
+        status: "complete",
+        offer: {
+          state: "results",
+          offerings: [{ code: "FPTSP15", capacity: "34", schedule: "Virtual" }],
+        },
+      });
+      expect(recover).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("recovers a lookup search that starts on an existing server 500 response", async () => {
+    vi.useFakeTimers();
+    try {
+      const document = new DOMParser().parseFromString(
+        "<title>Error 500</title><main>500 Internal Server Error</main>",
+        "text/html",
+      );
+      const recover = vi.fn(async () => {
+        document.title = "ZWEB_OFERTA_1 [Web Dynpro para ABAP]";
+        document.body.innerHTML = fixtureDocument("academic-offer-initial.html").body.innerHTML;
+        document.querySelector<HTMLElement>(".lsField__help--f4")?.addEventListener("click", () => {
+          document.body.insertAdjacentHTML("beforeend", `
+            <section>
+              <h2>Búsqueda: Código de Asignatura</h2>
+              <input type="text" title="Nombre o Código de la asignatura">
+              <div class="lsButton" tabindex="0"><span>Buscar</span></div>
+              <a href="#">Cerrar</a>
+            </section>`);
+        });
+        return "activated" as const;
+      });
+
+      await expect(new AcademicOfferController(document, recover).searchLookup("FGE"))
+        .resolves.toBe("activated");
+      expect(document.querySelector<HTMLInputElement>(
+        "input[title='Nombre o Código de la asignatura']",
+      )?.value).toBe("FGE*");
+      expect(recover).toHaveBeenCalledOnce();
     } finally {
       vi.useRealTimers();
     }

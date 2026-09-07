@@ -10,6 +10,11 @@ const SESSION_EXPIRED_PATTERNS = [
 
 const SAP_ERROR_PATTERNS = [
   "500 internal server error",
+  "http 500 internal server error",
+  "http error 500",
+  "http status 500",
+  "error 500",
+  "500 error",
   "505 http version not supported",
   "http error 505",
   "http status 505",
@@ -19,6 +24,12 @@ const SAP_ERROR_PATTERNS = [
   "error de aplicacion",
   "application error",
 ] as const;
+
+export function isSapErrorDocument(document: Document): boolean {
+  const text = documentText(document);
+  const title = normalizedText(document.title);
+  return SAP_ERROR_PATTERNS.some((pattern) => text.includes(pattern) || title.includes(pattern));
+}
 
 const PORTAL_PATTERNS = [
   "procesos academicos",
@@ -34,7 +45,7 @@ export function detectPortalSurface(document: Document): DetectionResult<PortalS
     return { kind: "session-expired", confidence: 1, reason: "Semantic session-expiry message found." };
   }
 
-  if (SAP_ERROR_PATTERNS.some((pattern) => text.includes(pattern) || title.includes(pattern))) {
+  if (isSapErrorDocument(document)) {
     return { kind: "sap-error", confidence: 0.98, reason: "Semantic SAP error message found." };
   }
 
