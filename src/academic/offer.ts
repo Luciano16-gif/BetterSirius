@@ -5,6 +5,7 @@ import type {
   AcademicOffering,
 } from "../core/types";
 import { normalizedText } from "../detection/text";
+import { isSapErrorDocument } from "../detection/portal-detector";
 
 type OfferingField = Exclude<keyof AcademicOffering, "schedules">;
 const LOOKUP_TRANSITION_TIMEOUT_MS = 20_000;
@@ -37,9 +38,11 @@ export interface AcademicOfferHydrationResult {
   readonly offer: AcademicOfferModel;
 }
 export interface AcademicOfferLookupHydrationResult {
-  readonly status: "expanded" | "complete" | "empty" | "not-found" | "stale";
+  readonly status: "expanded" | "complete" | "empty" | "not-found" | "stale" | "error";
   readonly options: readonly AcademicOfferLookupOption[];
 }
+
+type AcademicOfferRecovery = () => Promise<"activated" | "not-found" | "ambiguous" | "busy">;
 
 interface OfferRequest {
   readonly generation: number;
@@ -64,14 +67,16 @@ interface LookupRequest {
 
 export class AcademicOfferController {
   readonly #rootDocument: Document;
+  readonly #recover: AcademicOfferRecovery | undefined;
   #busy = false;
   #offerGeneration = 0;
   #offerRequest: OfferRequest | undefined;
   #lookupGeneration = 0;
   #lookupRequest: LookupRequest | undefined;
 
-  constructor(rootDocument: Document) {
+  constructor(rootDocument: Document, recover?: AcademicOfferRecovery) {
     this.#rootDocument = rootDocument;
+    this.#recover = recover;
   }
 
   async search(rawCode: string): Promise<AcademicOfferSearchResult> {
@@ -81,7 +86,7 @@ export class AcademicOfferController {
 
     this.#busy = true;
     try {
-      const target = await ensureAcademicOfferControls(this.#rootDocument);
+      const target = await this.#ensureAcademicOfferControls();
       if (!target) return "not-found";
       this.#startOfferRequest(target.input.ownerDocument, code);
       const activated = activateTextSearch(target, code);
@@ -100,7 +105,7 @@ export class AcademicOfferController {
 
     this.#busy = true;
     try {
-      const controls = await ensureAcademicOfferControls(this.#rootDocument);
+      const controls = await this.#ensureAcademicOfferControls();
       if (!controls) return "not-found";
       const action = locateValueHelpAction(this.#rootDocument);
       if (!action) return "not-found";
@@ -120,7 +125,7 @@ export class AcademicOfferController {
     try {
       let target = locateLookupControls(this.#rootDocument);
       if (!target) {
-        const controls = await ensureAcademicOfferControls(this.#rootDocument);
+        const controls = await this.#ensureAcademicOfferControls();
         if (!controls) return "not-found";
         const openAction = locateValueHelpAction(this.#rootDocument);
         if (!openAction) return "not-found";
@@ -178,7 +183,7 @@ export class AcademicOfferController {
         closeAction.click();
         if (!await waitForActiveLookupToClose(this.#rootDocument)) return "not-found";
       }
-      const target = await ensureAcademicOfferControls(this.#rootDocument);
+      const target = await this.#ensureAcademicOfferControls();
       if (!target) return "not-found";
       this.#startOfferRequest(target.input.ownerDocument, normalizedCode);
       const activated = activateTextSearch(target, normalizedCode);
@@ -193,6 +198,10 @@ export class AcademicOfferController {
   }
 
   async hydrateSearchResults(): Promise<AcademicOfferHydrationResult> {
+    return this.#hydrateSearchResults(1);
+  }
+
+  async #hydrateSearchResults(recoveriesRemaining: number): Promise<AcademicOfferHydrationResult> {
     const request = this.#offerRequest;
     if (!request) {
       return { status: "not-found", offer: { state: "unknown", offerings: [] } };
@@ -206,6 +215,14 @@ export class AcademicOfferController {
       if (fresh?.status === "stale") {
         return { status: "stale", offer: { state: "unknown", offerings: [] } };
       }
+      if (fresh?.status === "recoverable-error") {
+        if (recoveriesRemaining > 0) {
+          this.#discardOfferRequest(request);
+          const retried = await this.search(request.query);
+          if (retried === "activated") return this.#hydrateSearchResults(recoveriesRemaining - 1);
+        }
+        return { status: "not-found", offer: { state: "error", offerings: [], query: request.query } };
+      }
       if (!fresh) return { status: "not-found", offer: { state: "unknown", offerings: [] } };
       const offer = readAcademicOffer(fresh.document);
       return offer.state === "empty"
@@ -217,11 +234,23 @@ export class AcademicOfferController {
   }
 
   async hydrateLookupResults(): Promise<AcademicOfferLookupHydrationResult> {
+    return this.#hydrateLookupResults(1);
+  }
+
+  async #hydrateLookupResults(recoveriesRemaining: number): Promise<AcademicOfferLookupHydrationResult> {
     const request = this.#lookupRequest;
     try {
       const fresh = request
         ? await waitForFreshLookupResults(this.#rootDocument, request, () => this.#lookupGeneration)
         : undefined;
+      if (fresh?.status === "recoverable-error") {
+        if (request && recoveriesRemaining > 0) {
+          this.#discardLookupRequest(request);
+          const retried = await this.searchLookup(request.query);
+          if (retried === "activated") return this.#hydrateLookupResults(recoveriesRemaining - 1);
+        }
+        return { status: "error", options: [] };
+      }
       if (fresh?.status === "stale") return { status: "stale", options: [] };
       const lookupDocument = fresh?.document ?? await waitForLookupResults(this.#rootDocument);
       if (!lookupDocument) return { status: "not-found", options: [] };
@@ -293,6 +322,19 @@ export class AcademicOfferController {
     }
   }
 
+  async #ensureAcademicOfferControls(): Promise<{
+    readonly input: HTMLInputElement;
+    readonly action: HTMLElement;
+  } | null> {
+    const current = await ensureAcademicOfferControls(this.#rootDocument);
+    if (current || !this.#recover || !hasRecoverableAcademicOfferError(this.#rootDocument)) {
+      return current;
+    }
+    const recovered = await this.#recover();
+    if (recovered !== "activated") return null;
+    return waitForAcademicOfferControls(this.#rootDocument, false);
+  }
+
   #discardLookupRequest(request = this.#lookupRequest): void {
     if (!request) return;
     request.observer.disconnect();
@@ -333,6 +375,9 @@ export function readAcademicOffer(document: Document): AcademicOfferModel {
   const documents = reachableDocuments(document);
   const lookup = readAcademicOfferLookup(documents);
   const lookupPart = lookup ? { lookup } : {};
+  if (hasRecoverableAcademicOfferError(document)) {
+    return { state: "error", offerings: [], ...lookupPart };
+  }
   const reads = documents.flatMap((currentDocument) =>
     Array.from(currentDocument.querySelectorAll("table")).map(readOfferTable),
   );
@@ -430,7 +475,10 @@ function readOfferTable(table: HTMLTableElement): OfferTableRead {
     mergeIfMissing(accumulator.offering, "prerequisiteCode", valueAt(values, indexes.prerequisiteCode));
     mergeIfMissing(accumulator.offering, "modality", valueAt(values, indexes.modality));
     mergeIfMissing(accumulator.offering, "firstMonthCost", valueAt(values, indexes.firstMonthCost));
-    const schedule = valueAt(values, indexes.schedule);
+    const schedule = academicSchedule(
+      valueAt(values, indexes.schedule),
+      blockDescription,
+    );
     if (schedule && !accumulator.schedules.includes(schedule)) accumulator.schedules.push(schedule);
 
     previousIdentity = {
@@ -789,11 +837,13 @@ async function waitForActiveLookupToClose(rootDocument: Document): Promise<boole
 
 async function waitForAcademicOfferControls(
   rootDocument: Document,
+  stopOnError = true,
 ): Promise<{ readonly input: HTMLInputElement; readonly action: HTMLElement } | null> {
   const deadline = Date.now() + LOOKUP_TRANSITION_TIMEOUT_MS;
   do {
     const controls = locateAcademicOfferControls(rootDocument);
     if (controls) return controls;
+    if (stopOnError && hasRecoverableAcademicOfferError(rootDocument)) return null;
     await new Promise<void>((resolve) => setTimeout(resolve, 100));
   } while (Date.now() < deadline);
   return null;
@@ -817,10 +867,12 @@ async function waitForFreshOfferResults(
   currentGeneration: () => number,
 ): Promise<{ readonly status: "fresh"; readonly document: Document }
   | { readonly status: "stale" }
+  | { readonly status: "recoverable-error" }
   | null> {
   const deadline = Date.now() + LOOKUP_TRANSITION_TIMEOUT_MS;
   do {
     if (request.generation !== currentGeneration()) return { status: "stale" };
+    if (hasRecoverableAcademicOfferError(rootDocument)) return { status: "recoverable-error" };
     const document = reachableDocuments(rootDocument)
       .find((candidate) => isAcademicOfferDocument(candidate)
         && !isAcademicOfferLookupDocument(candidate));
@@ -880,10 +932,12 @@ async function waitForFreshLookupResults(
   request: LookupRequest,
   currentGeneration: () => number,
 ): Promise<{ readonly status: "fresh"; readonly document: Document }
-  | { readonly status: "stale" }> {
+  | { readonly status: "stale" }
+  | { readonly status: "recoverable-error" }> {
   const deadline = Date.now() + LOOKUP_TRANSITION_TIMEOUT_MS;
   do {
     if (request.generation !== currentGeneration()) return { status: "stale" };
+    if (hasRecoverableAcademicOfferError(rootDocument)) return { status: "recoverable-error" };
     const document = locateActiveLookupDocument(rootDocument);
     if (document) {
       const lookup = readAcademicOfferLookup([document]);
@@ -1038,6 +1092,29 @@ function isAcademicOfferDocument(document: Document): boolean {
     .some((label) => normalizedText(label.textContent) === "codigo de asignatura");
 }
 
+export function hasRecoverableAcademicOfferError(rootDocument: Document): boolean {
+  if (isSapErrorDocument(rootDocument)) return true;
+  const visitFrames = (document: Document, insideOffer: boolean): boolean => {
+    for (const frame of document.querySelectorAll("iframe")) {
+      try {
+        const source = normalizedText(frame.getAttribute("src"));
+        const child = frame.contentDocument;
+        if (!child) continue;
+        const offerScope = insideOffer
+          || source.includes("zweb oferta 1")
+          || source.includes("zweb_oferta_1")
+          || isAcademicOfferDocument(child);
+        if (offerScope && isSapErrorDocument(child)) return true;
+        if (visitFrames(child, offerScope)) return true;
+      } catch {
+        // Cross-origin frames cannot be inspected and are never reloaded here.
+      }
+    }
+    return false;
+  };
+  return visitFrames(rootDocument, false);
+}
+
 function isAcademicOfferLookupDocument(document: Document): boolean {
   const text = canonicalHeader(document.body?.textContent);
   if (!text.includes("busqueda codigo de asignatura")
@@ -1154,19 +1231,25 @@ function alignContinuationRow(
       aligned[index] = value;
     });
 
+    const scheduleValueFollowsDescription = isScheduleMode(values[scheduleIndex + 1])
+      && looksLikeCapacity(values[scheduleIndex + 2]);
     const leadingValues = values.slice(utilityColumnCount, scheduleIndex);
     setAlignedValue(aligned, indexes.period, leadingValues[0] ?? "");
     const sectionValues = leadingValues.slice(1);
-    if (sectionValues.length >= 2) {
+    if (scheduleValueFollowsDescription) {
+      setAlignedValue(aligned, indexes.block, sectionValues.at(-1) ?? "");
+      setAlignedValue(aligned, indexes.blockDescription, values[scheduleIndex] ?? "");
+    } else if (sectionValues.length >= 2) {
       setAlignedValue(aligned, indexes.block, sectionValues.at(-2) ?? "");
       setAlignedValue(aligned, indexes.blockDescription, sectionValues.at(-1) ?? "");
     } else {
       setAlignedValue(aligned, indexes.blockDescription, sectionValues[0] ?? "");
     }
 
-    setAlignedValue(aligned, indexes.schedule, values[scheduleIndex] ?? "");
-    setAlignedValue(aligned, indexes.capacity, values[scheduleIndex + 1] ?? "");
-    const trailingValues = values.slice(scheduleIndex + 2);
+    const nativeScheduleIndex = scheduleValueFollowsDescription ? scheduleIndex + 1 : scheduleIndex;
+    setAlignedValue(aligned, indexes.schedule, values[nativeScheduleIndex] ?? "");
+    setAlignedValue(aligned, indexes.capacity, values[nativeScheduleIndex + 1] ?? "");
+    const trailingValues = values.slice(nativeScheduleIndex + 2);
     setAlignedValue(aligned, indexes.firstMonthCost, trailingValues.at(-1) ?? "");
     setAlignedValue(aligned, indexes.modality, trailingValues.at(-2) ?? "");
     setAlignedValue(aligned, indexes.prerequisiteCode, trailingValues.at(-3) ?? "");
@@ -1180,6 +1263,26 @@ function alignContinuationRow(
     ...Array.from({ length: missing }, () => ""),
     ...values.slice(utilityColumnCount),
   ];
+}
+
+function isScheduleMode(value: string | undefined): boolean {
+  const normalized = normalizedText(value);
+  return normalized === "virtual"
+    || normalized === "presencial"
+    || normalized === "hibrido"
+    || normalized === "remoto";
+}
+
+function looksLikeCapacity(value: string | undefined): boolean {
+  return /^\d+(?:[.,]\d+)?$/.test((value ?? "").trim());
+}
+
+function academicSchedule(schedule: string, blockDescription: string): string {
+  if (!isScheduleMode(schedule)) return schedule;
+  const describedMeeting = blockDescription.match(
+    /(?:LU(?:N(?:ES)?)?|MA(?:R(?:TES)?)?|MI(?:E|É)?(?:RCOLES)?|JU(?:E(?:VES)?)?|VI(?:E(?:RNES)?)?|S(?:A|Á)(?:BADO)?|DO(?:M(?:INGO)?)?)\s*[-–]?\s*\d{1,2}:\d{2}.*$/iu,
+  );
+  return describedMeeting?.[0].trim() || schedule;
 }
 
 function setAlignedValue(values: string[], index: number, value: string): void {

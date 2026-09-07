@@ -28,6 +28,14 @@ describe("portal detection", () => {
     );
     expect(detectPortalSurface(error)).toMatchObject({ kind: "sap-error" });
   });
+
+  it("recognizes Sirius HTTP 500 responses as recoverable SAP errors", () => {
+    const error = new DOMParser().parseFromString(
+      "<title>500 Internal Server Error</title><main>HTTP Status 500</main>",
+      "text/html",
+    );
+    expect(detectPortalSurface(error)).toMatchObject({ kind: "sap-error" });
+  });
 });
 
 describe("application detection", () => {

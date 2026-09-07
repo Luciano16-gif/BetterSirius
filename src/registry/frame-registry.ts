@@ -158,7 +158,9 @@ export class FrameRegistry {
             ? readAcademicHistory(frameDocument)
             : { state: "unavailable", courses: [] },
           academicOffer: detection.application === "academic-offer" && frameDocument
-            ? readAcademicOffer(frameDocument)
+            ? detection.state === "error"
+              ? { state: "error", offerings: [] }
+              : readAcademicOffer(frameDocument)
             : { state: "unavailable", offerings: [] },
           registrationWindow: detection.application === "registration-window" && frameDocument
             ? readRegistrationWindow(frameDocument)
@@ -277,6 +279,7 @@ function offerLookupPriority(model: AcademicOfferLookupModel): number {
 
 function offerPriority(model: AcademicOfferModel): number {
   const priorities: Readonly<Record<AcademicOfferModel["state"], number>> = {
+    error: 6,
     results: 5,
     empty: 4,
     initial: 3,
