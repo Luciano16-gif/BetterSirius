@@ -9,8 +9,11 @@ await rm(outputDirectory, { recursive: true, force: true });
 await mkdir(outputDirectory, { recursive: true });
 
 await build({
-  entryPoints: [resolve(root, "src/content/index.ts")],
-  outfile: resolve(outputDirectory, "content.js"),
+  entryPoints: {
+    content: resolve(root, "src/content/index.ts"),
+    "pronto-pago-frame": resolve(root, "src/content/pronto-pago-frame.ts"),
+  },
+  outdir: outputDirectory,
   bundle: true,
   format: "iife",
   platform: "browser",
@@ -39,11 +42,18 @@ const allowedPatterns = [
   "http://sirius.unimet.edu.ve/*",
   "http://sappro2.unimet.edu.ve/*",
 ];
+const prontoPagoPattern = "http://gapi2.unimet.edu.ve/prontopago/cuenta.php";
 
 if (
   manifest.permissions.length !== 0 ||
   JSON.stringify(manifest.host_permissions) !== JSON.stringify(allowedPatterns) ||
+  manifest.content_scripts.length !== 2 ||
   JSON.stringify(manifest.content_scripts[0]?.matches) !== JSON.stringify(allowedPatterns) ||
+  JSON.stringify(manifest.content_scripts[1]?.matches) !== JSON.stringify([prontoPagoPattern]) ||
+  JSON.stringify(manifest.content_scripts[1]?.js) !== JSON.stringify(["pronto-pago-frame.js"]) ||
+  manifest.content_scripts[1]?.all_frames !== true ||
+  manifest.content_scripts[1]?.match_origin_as_fallback === true ||
+  manifest.content_scripts[1]?.match_about_blank === true ||
   manifest.content_scripts[0]?.all_frames !== true ||
   manifest.content_scripts[0]?.match_about_blank !== true ||
   manifest.content_scripts[0]?.match_origin_as_fallback !== true

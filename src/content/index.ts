@@ -26,6 +26,7 @@ import {
   listenForWebPaymentsRuntime,
   publishWebPaymentsRuntime,
 } from "../finance/web-payments-runtime";
+import { listenForProntoPago } from "../finance/pronto-pago-runtime";
 
 function start(): void {
   assertAllowedRuntimeLocation(window.location);
@@ -46,6 +47,7 @@ function start(): void {
     academicHistory: { state: "unavailable", courses: [] },
     academicOffer: { state: "unavailable", offerings: [] },
     registrationWindow: { state: "unavailable" },
+    prontoPago: { state: "unavailable" },
     webPayments: { state: "unavailable" },
   };
   const navigator = new AcademicNavigator(document);
@@ -64,6 +66,8 @@ function start(): void {
   let offerLookupRequestId = 0;
   let registrationWindowTimeout: number | undefined;
   let webPaymentsTimeout: number | undefined;
+  let prontoPagoTimeout: number | undefined;
+  let prontoPagoSource: string | undefined;
   let shell: ReturnType<typeof mountBetterSiriusShell>;
   const bridgedWebPayments = new Map<unknown, WebPaymentsModel>();
   const runtimePaymentSource = Symbol("web-payments-runtime");
@@ -99,6 +103,21 @@ function start(): void {
   window.addEventListener("message", onFrameMessage);
   const stopRuntimePayments = listenForWebPaymentsRuntime((paymentModel) => {
     acceptBridgedPayment(runtimePaymentSource, paymentModel);
+  });
+  const clearProntoPagoTimeout = (): void => {
+    if (prontoPagoTimeout !== undefined) window.clearTimeout(prontoPagoTimeout);
+    prontoPagoTimeout = undefined;
+  };
+  const stopProntoPago = listenForProntoPago((source, prontoPago) => {
+    if (prontoPago.state === "unavailable") {
+      if (source !== prontoPagoSource || model.prontoPago.state === "opening") return;
+      prontoPagoSource = undefined;
+    } else {
+      prontoPagoSource = source;
+    }
+    clearProntoPagoTimeout();
+    model = { ...model, prontoPago };
+    shell?.update(model);
   });
 
   const beginHistoryOperation = (
@@ -250,16 +269,44 @@ function start(): void {
       }, 45_000);
       return result;
     },
-    onOpenWebPayments: async () => {
-      const previous = model.webPayments;
-      model = { ...model, webPayments: { ...previous, pending: "opening" } };
+    onOpenProntoPago: async () => {
+      clearProntoPagoTimeout();
+      prontoPagoSource = undefined;
+      model = { ...model, prontoPago: { state: "opening" } };
       shell.update(model);
-      const result = await financialNavigator.openWebPayments();
+      const result = await financialNavigator.openProntoPago();
       if (result !== "activated") {
-        model = { ...model, webPayments: previous };
+        model = { ...model, prontoPago: { state: "unavailable" } };
         shell.update(model);
         return result;
       }
+      if (webPaymentsTimeout !== undefined) window.clearTimeout(webPaymentsTimeout);
+      webPaymentsTimeout = undefined;
+      bridgedWebPayments.clear();
+      model = { ...model, webPayments: { state: "unavailable" } };
+      shell.update(model);
+      if (model.prontoPago.state !== "opening") return result;
+      prontoPagoTimeout = window.setTimeout(() => {
+        prontoPagoTimeout = undefined;
+        model = { ...model, prontoPago: { state: "unknown" } };
+        shell.update(model);
+      }, 45_000);
+      return result;
+    },
+    onOpenWebPayments: async () => {
+      model = { ...model, webPayments: { state: "unavailable", pending: "opening" } };
+      shell.update(model);
+      const result = await financialNavigator.openWebPayments();
+      if (result !== "activated") {
+        model = { ...model, webPayments: { state: "unavailable" } };
+        shell.update(model);
+        return result;
+      }
+      clearProntoPagoTimeout();
+      prontoPagoSource = undefined;
+      model = { ...model, prontoPago: { state: "unavailable" } };
+      shell.update(model);
+      if (!model.webPayments.pending) return result;
       if (webPaymentsTimeout !== undefined) window.clearTimeout(webPaymentsTimeout);
       webPaymentsTimeout = window.setTimeout(() => {
         webPaymentsTimeout = undefined;
@@ -456,8 +503,10 @@ function start(): void {
       if (offerLookupTimeout !== undefined) window.clearTimeout(offerLookupTimeout);
       if (registrationWindowTimeout !== undefined) window.clearTimeout(registrationWindowTimeout);
       if (webPaymentsTimeout !== undefined) window.clearTimeout(webPaymentsTimeout);
+      clearProntoPagoTimeout();
       window.removeEventListener("message", onFrameMessage);
       stopRuntimePayments();
+      stopProntoPago();
       bridgedWebPayments.clear();
       shell.dispose();
     },

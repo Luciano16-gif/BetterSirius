@@ -131,6 +131,26 @@ describe("read-only academic navigator", () => {
 });
 
 describe("read-only financial navigator", () => {
+  it("selects the discount statement when the administrative menu exposes both payment views", async () => {
+    const navigation = document.createElement("nav");
+    navigation.innerHTML = '<button type="button">Procesos Administrativos</button>';
+    document.body.replaceChildren(navigation);
+    const discountAction = vi.fn();
+    const webPaymentsAction = vi.fn();
+    navigation.querySelector("button")!.addEventListener("click", () => {
+      navigation.innerHTML = `
+        <a href="#discount">Descuento por Pronto Pago</a>
+        <a href="#payments">Web de Pagos</a>`;
+      const [discount, webPayments] = navigation.querySelectorAll("a");
+      discount!.addEventListener("click", discountAction);
+      webPayments!.addEventListener("click", webPaymentsAction);
+    });
+
+    await expect(new FinancialNavigator(document).openProntoPago()).resolves.toBe("activated");
+    expect(discountAction).toHaveBeenCalledOnce();
+    expect(webPaymentsAction).not.toHaveBeenCalled();
+  });
+
   it("opens Web de Pagos through the observed administrative hierarchy", async () => {
     const navigation = document.createElement("nav");
     document.body.replaceChildren(navigation);

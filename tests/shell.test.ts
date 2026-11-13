@@ -20,6 +20,7 @@ const readyModel: ShellModel = {
     endDate: "01.09.2099",
     endTime: "24:00:00",
   },
+  prontoPago: { state: "unavailable" },
   webPayments: {
     state: "results",
     balanceAtDate: "125,00",
@@ -697,20 +698,67 @@ describe("responsive shell", () => {
     controller.dispose();
   });
 
-  it("opens Web de Pagos from the home shortcut with one explicit action", async () => {
-    const open = vi.fn().mockResolvedValue("activated" as const);
+  it("renders the discount statement by default and switches both ways inside BetterSirius", async () => {
+    const openProntoPago = vi.fn().mockResolvedValue("activated" as const);
+    const openWebPayments = vi.fn().mockResolvedValue("activated" as const);
     const controller = mountBetterSiriusShell(
       document,
-      { ...readyModel, webPayments: { state: "unavailable" } },
-      { onOpenWebPayments: open },
+      readyModel,
+      { onOpenProntoPago: openProntoPago, onOpenWebPayments: openWebPayments },
     );
-    const shadow = document.getElementById(SHELL_HOST_ID)?.shadowRoot;
-    shadow?.querySelector<HTMLButtonElement>("[data-panel='home'] [data-open-web-payments]")?.click();
-    await Promise.resolve();
-    await Promise.resolve();
+    const host = document.getElementById(SHELL_HOST_ID) as HTMLElement;
+    const shadow = host.shadowRoot!;
+    const shortcut = shadow.querySelector<HTMLButtonElement>("[data-panel='home'] [data-open-pronto-pago]")!;
+    const switchButton = shadow.querySelector<HTMLButtonElement>("[data-panel='payments'] .payment-switch[data-open-web-payments]")!;
+    const statement = shadow.querySelector<HTMLElement>("[data-pronto-pago-view]")!;
+    shortcut.click();
+    controller.update({ ...readyModel, prontoPago: { state: "opening" } });
+    expect(statement.textContent).toContain("Cargando el estado de cuenta");
+    controller.update({ ...readyModel, prontoPago: {
+      state: "results",
+      lines: [{ date: "01/01/2099", concept: '<img src="synthetic"> Descuento', amountUsd: "$ -10,00", discount: true }],
+      exchangeRate: "40,00 Bs.",
+      totalUsd: "$ 90,00",
+      totalBs: "Bs. 3.600,00",
+    } });
+    await vi.waitFor(() => expect(switchButton.disabled).toBe(false));
 
-    expect(open).toHaveBeenCalledOnce();
-    expect(shadow?.querySelector<HTMLElement>("[data-panel='payments']")?.hidden).toBe(false);
+    expect(openProntoPago).toHaveBeenCalledOnce();
+    expect(openWebPayments).not.toHaveBeenCalled();
+    expect(host.dataset.mode).toBe("enhanced");
+    expect(statement.querySelector(".discount-row")?.textContent).toContain('<img src="synthetic"> Descuento');
+    expect(statement.querySelector("img")).toBeNull();
+    expect(statement.textContent).toContain("Bs. 3.600,00");
+    expect(switchButton.hidden).toBe(false);
+    switchButton.click();
+
+    expect(openWebPayments).toHaveBeenCalledOnce();
+    expect(host.dataset.mode).toBe("enhanced");
+    expect(switchButton.hidden).toBe(true);
+    expect(shadow.querySelector("[data-payments-title]")?.textContent).toBe("Web de Pagos");
+    const back = shadow.querySelector<HTMLButtonElement>("[data-panel='payments'] .payment-switch[data-open-pronto-pago]")!;
+    await vi.waitFor(() => expect(back.disabled).toBe(false));
+    back.click();
+    expect(host.dataset.mode).toBe("enhanced");
+    expect(statement.hidden).toBe(false);
+    expect(openProntoPago).toHaveBeenCalledTimes(2);
+    controller.dispose();
+  });
+
+  it("keeps Web de Pagos available when the default Sirius entry is missing", async () => {
+    const openProntoPago = vi.fn().mockResolvedValue("not-found" as const);
+    const controller = mountBetterSiriusShell(document, readyModel, { onOpenProntoPago: openProntoPago });
+    const host = document.getElementById(SHELL_HOST_ID) as HTMLElement;
+    const shadow = host.shadowRoot!;
+    shadow.querySelector<HTMLButtonElement>(".navigation [data-route='payments']")!.click();
+
+    const status = shadow.querySelector<HTMLElement>("[data-payments-action-status]")!;
+    await vi.waitFor(() => expect(status.textContent).toContain("No se pudo abrir Descuento por Pronto Pago"));
+    expect(host.dataset.mode).toBe("enhanced");
+    const switchButton = shadow.querySelector<HTMLButtonElement>("[data-panel='payments'] [data-open-web-payments]")!;
+    expect(switchButton.hidden).toBe(false);
+    switchButton.click();
+    expect(shadow.querySelector<HTMLElement>("[data-payments-view]")?.hidden).toBe(false);
     controller.dispose();
   });
 
@@ -765,6 +813,7 @@ describe("responsive shell", () => {
       academicHistory: { state: "unavailable", courses: [] },
       academicOffer: { state: "unavailable", offerings: [] },
       registrationWindow: { state: "unavailable" },
+      prontoPago: { state: "unavailable" },
       webPayments: { state: "unavailable" },
     });
     const text = document.getElementById(SHELL_HOST_ID)?.shadowRoot?.textContent ?? "";

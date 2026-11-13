@@ -3,9 +3,14 @@ import {
   WEB_PAYMENTS_RUNTIME_UPSTREAM,
 } from "../finance/web-payments-runtime";
 import { validatedWebPaymentsModel } from "../finance/web-payments-bridge";
+import { isProntoPagoLocation, validateProntoPago } from "../finance/pronto-pago";
+import { PRONTO_PAGO_DOWNSTREAM, PRONTO_PAGO_UPSTREAM } from "../finance/pronto-pago-runtime";
+import { isAllowedRuntimeLocation } from "../safety/runtime-policy";
 
 interface RuntimeSender {
   readonly frameId?: number;
+  readonly documentId?: string;
+  readonly url?: string;
   readonly tab?: { readonly id?: number; readonly url?: string };
 }
 
@@ -27,28 +32,40 @@ interface BackgroundChrome {
 const extensionChrome = (globalThis as typeof globalThis & { chrome: BackgroundChrome }).chrome;
 
 extensionChrome.runtime.onMessage.addListener((message, sender) => {
-  if (!isRecord(message) || message.kind !== WEB_PAYMENTS_RUNTIME_UPSTREAM) return;
-  if (!isSiriusTab(sender.tab?.url) || sender.frameId === 0) return;
+  if (!isRecord(message) || !isSiriusTab(sender.tab?.url) || !sender.frameId) return;
   const tabId = sender.tab?.id;
-  const model = validatedWebPaymentsModel(message.model);
-  if (tabId === undefined || !model) return;
+  if (tabId === undefined) return;
+  if (message.kind === WEB_PAYMENTS_RUNTIME_UPSTREAM) {
+    const model = validatedWebPaymentsModel(message.model);
+    if (model) relay(tabId, { kind: WEB_PAYMENTS_RUNTIME_DOWNSTREAM, model });
+  } else if (message.kind === PRONTO_PAGO_UPSTREAM && sender.documentId && isProntoPagoFrame(sender.url)) {
+    const model = validateProntoPago(message.model);
+    if (model) relay(tabId, { kind: PRONTO_PAGO_DOWNSTREAM, source: sender.documentId, model });
+  }
+});
+
+function relay(tabId: number, message: unknown): void {
   try {
-    const result = extensionChrome.tabs.sendMessage(
-      tabId,
-      { kind: WEB_PAYMENTS_RUNTIME_DOWNSTREAM, model },
-      { frameId: 0 },
-    );
+    const result = extensionChrome.tabs.sendMessage(tabId, message, { frameId: 0 });
     if (result && "catch" in result) void result.catch(() => undefined);
   } catch {
     // The top frame can disappear while SAP replaces its work area.
   }
-});
+}
 
 function isSiriusTab(value: string | undefined): boolean {
   if (!value) return false;
   try {
-    const url = new URL(value);
-    return url.protocol === "http:" && url.hostname === "sirius.unimet.edu.ve";
+    return isAllowedRuntimeLocation(new URL(value));
+  } catch {
+    return false;
+  }
+}
+
+function isProntoPagoFrame(value: string | undefined): boolean {
+  if (!value) return false;
+  try {
+    return isProntoPagoLocation(new URL(value));
   } catch {
     return false;
   }

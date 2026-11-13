@@ -165,6 +165,26 @@ export interface WebPaymentsModel {
   readonly pending?: "opening";
 }
 
+export interface ProntoPagoLine {
+  readonly date: string;
+  readonly concept: string;
+  readonly amountUsd: string;
+  readonly discount: boolean;
+}
+
+export type ProntoPagoStatement =
+  | { readonly state: "unavailable" | "unknown" }
+  | {
+    readonly state: "results";
+    readonly lines: readonly ProntoPagoLine[];
+    readonly exchangeRate: string;
+    readonly exchangeDate?: string;
+    readonly totalUsd: string;
+    readonly totalBs: string;
+  };
+
+export type ProntoPagoModel = ProntoPagoStatement | { readonly state: "opening" };
+
 export interface ShellModel {
   readonly portalState: Exclude<PortalSurface, "unsupported" | "login">;
   readonly applications: readonly DetectedApplication[];
@@ -172,5 +192,6 @@ export interface ShellModel {
   readonly academicHistory: AcademicHistoryModel;
   readonly academicOffer: AcademicOfferModel;
   readonly registrationWindow: RegistrationWindowModel;
+  readonly prontoPago: ProntoPagoModel;
   readonly webPayments: WebPaymentsModel;
 }

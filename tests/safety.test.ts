@@ -18,12 +18,16 @@ describe("runtime scope", () => {
       "http://sirius.unimet.edu.ve/*",
       "http://sappro2.unimet.edu.ve/*",
     ];
+    const prontoPagoRoute = "http://gapi2.unimet.edu.ve/prontopago/cuenta.php";
     expect(manifest.host_permissions).toEqual(allowedHosts);
-    expect(manifest.content_scripts).toHaveLength(1);
+    expect(manifest.content_scripts).toHaveLength(2);
     expect(manifest.content_scripts[0].matches).toEqual(allowedHosts);
     expect(manifest.content_scripts[0].all_frames).toBe(true);
     expect(manifest.content_scripts[0].match_about_blank).toBe(true);
     expect(manifest.content_scripts[0].match_origin_as_fallback).toBe(true);
+    expect(manifest.content_scripts[1]).toEqual({
+      matches: [prontoPagoRoute], js: ["pronto-pago-frame.js"], run_at: "document_idle", all_frames: true,
+    });
     expect(manifest.background).toEqual({ service_worker: "background.js" });
   });
 

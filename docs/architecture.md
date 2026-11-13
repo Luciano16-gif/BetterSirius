@@ -11,8 +11,8 @@ Current Sirius document
   -> allowlisted academic-process detector
   -> iframe registry (replacement-aware, no URL persistence)
   -> application detector / passive adapter
-  -> fixture-tested academic / Web de Pagos parsers
-  -> allowlisted MV3 frame relay for the separate SAP application host
+  -> fixture-tested academic and payment parsers
+  -> allowlisted MV3 frame relay for the separate UNIMET application frames
   -> explicit read-only action governor
   -> normalized in-memory domain model
   -> BetterSirius Shadow DOM shell
@@ -26,13 +26,13 @@ Unknown or ambiguous state
 - `src/content`: validates the exact runtime scope and coordinates startup.
 - `src/login`: presents the native Sirius login controls responsively without cloning fields, reading values, or submitting the form programmatically.
 - `src/academic`: parses compatible historical-grade, academic-offer, and offer value-help tables through stable semantic headers. The offer controller accepts an explicit course code or opens Sirius's visible name-or-code selector. A lookup requires an explicit search, an exact code/name row match, and one visible offer search; it never reads hidden fields or transport attributes.
-- `src/finance`: reads only the four verified Web de Pagos totals, the pending-payment status, and message-count metadata already rendered by Sirius. A minimal MV3 service worker relays this normalized model from the observed SAP application host to the portal's top frame; it receives no raw HTML, URLs, hidden state, identity fields, or payment controls. It ignores identity, campus, account-line items, exchange-rate calculations, and payment methods.
+- `src/finance`: reads the four Web de Pagos totals, the pending-payment status, and message-count metadata already rendered by Sirius. The Pronto Pago reader runs in the observed statement frame and reads its visible line items, official exchange rate, and totals. An MV3 service worker relays the validated models to the same tab's portal frame. The relayed models contain no raw HTML, URLs, hidden state, identity fields, or payment controls.
 - `src/detection`: recognizes portal and application state through stable paths, headings, labels, and table headers. Generated `WD...` IDs are never selectors.
 - `src/registry`: rescans current iframe instances and discards state when an iframe is replaced.
 - `src/navigation`: performs the single supported user-triggered read navigation by rediscovering exact semantic menu labels before each click. It never reads or replays transport state.
 - `src/adapters`: establishes the future adapter contract (`detect`, `readState`, `locateAction`, `classifyError`). MVP action location is deliberately inert.
 - `src/ui`: renders the responsive shell in Shadow DOM without unmounting or rewriting SAP.
-- `src/safety`: enforces the exact observed Sirius portal host and portal path at runtime. Passive frame readers are additionally allowlisted only on the observed `sappro2.unimet.edu.ve` SAP application host; they cannot mount the shell or navigate.
+- `src/safety`: enforces the exact observed Sirius portal host and portal path at runtime. Passive frame readers also run on the observed SAP application host and the exact Pronto Pago statement path on `gapi2.unimet.edu.ve`; they cannot mount the shell or navigate.
 
 The application fingerprint model retains only a small application enum, screen-state enum, and confidence value. The academic-process model emits only fixed catalog constants plus a presence boolean. History and academic-offer models temporarily retain normalized visible cells required by the UI. No model retains a full URL, hidden field, session identifier, or SAP transport state, and nothing is persisted.
 
