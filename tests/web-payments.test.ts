@@ -40,6 +40,22 @@ describe("Web de Pagos reader", () => {
     });
   });
 
+  it.each(["", "0", "125.00", "Bs. 125", "-", "12.34,00"])(
+    "does not borrow another total when the balance is %j",
+    (balance) => {
+      const document = fixtureDocument("web-payments-results.html");
+      document.querySelector("section p strong")!.textContent = balance;
+      expect(readWebPayments(document)).toMatchObject({ state: "unknown" });
+      expect(readWebPayments(document)).not.toHaveProperty("balanceAtDate");
+    },
+  );
+
+  it("does not borrow an amount across SAP summary rows", () => {
+    const document = fixtureDocument("web-payments-sap-row.html");
+    document.querySelector("tr td:last-child")!.textContent = "";
+    expect(readWebPayments(document).state).toBe("unknown");
+  });
+
   it("does not treat unrelated pages as a financial account", () => {
     const document = new DOMParser().parseFromString("<main>Contenido desconocido</main>", "text/html");
     expect(readWebPayments(document)).toEqual({ state: "unavailable" });

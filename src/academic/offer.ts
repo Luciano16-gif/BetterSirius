@@ -58,11 +58,17 @@ interface LookupRequest {
   readonly generation: number;
   readonly query: string;
   readonly baselineDocument: Document;
-  readonly baselineQuery?: string;
   readonly baselineState?: AcademicOfferLookupModel["state"];
   readonly baselineSignature: string;
   readonly observer: MutationObserver;
   resultSurfaceChanged: boolean;
+}
+
+interface LookupResults {
+  readonly generation: number;
+  readonly document: Document;
+  readonly query: string;
+  readonly options: readonly AcademicOfferLookupOption[];
 }
 
 export class AcademicOfferController {
@@ -73,6 +79,7 @@ export class AcademicOfferController {
   #offerRequest: OfferRequest | undefined;
   #lookupGeneration = 0;
   #lookupRequest: LookupRequest | undefined;
+  #lookupResults: LookupResults | undefined;
 
   constructor(rootDocument: Document, recover?: AcademicOfferRecovery) {
     this.#rootDocument = rootDocument;
@@ -109,6 +116,7 @@ export class AcademicOfferController {
       if (!controls) return "not-found";
       const action = locateValueHelpAction(this.#rootDocument);
       if (!action) return "not-found";
+      this.#resetLookup();
       action.click();
       return "activated";
     } finally {
@@ -135,13 +143,12 @@ export class AcademicOfferController {
       if (!target) return "not-found";
       const lookupDocument = target.input.ownerDocument;
       const baseline = readAcademicOfferLookup([lookupDocument]);
-      this.#discardLookupRequest();
-      const generation = ++this.#lookupGeneration;
+      this.#resetLookup();
+      const generation = this.#lookupGeneration;
       const request: LookupRequest = {
         generation,
         query,
         baselineDocument: lookupDocument,
-        ...(baseline?.query ? { baselineQuery: baseline.query } : {}),
         ...(baseline?.state ? { baselineState: baseline.state } : {}),
         baselineSignature: baseline?.state === "results"
           ? lookupOptionsSignature(baseline.options)
@@ -176,8 +183,16 @@ export class AcademicOfferController {
     this.#busy = true;
     try {
       const lookupDocument = locateActiveLookupDocument(this.#rootDocument);
+      const cached = this.#lookupResults;
+      const knownOption = cached?.generation === this.#lookupGeneration
+        && (!lookupDocument || (cached.document === lookupDocument
+          && cached.query === normalizeLookupIdentity(readLookupQuery(lookupDocument))))
+        && cached.options.some((candidate) => lookupOptionKey(candidate) === lookupOptionKey(option));
+      if (!knownOption && (!lookupDocument || !lookupContainsOption(lookupDocument, option))) return "not-found";
       if (lookupDocument) {
-        if (!lookupContainsOption(lookupDocument, option)) return "not-found";
+        if (!knownOption) {
+          this.#rememberLookupResults(lookupDocument, readAcademicOfferLookup([lookupDocument])?.options ?? []);
+        }
         const closeAction = locateLookupCloseAction(lookupDocument);
         if (!closeAction) return "not-found";
         closeAction.click();
@@ -239,6 +254,7 @@ export class AcademicOfferController {
 
   async #hydrateLookupResults(recoveriesRemaining: number): Promise<AcademicOfferLookupHydrationResult> {
     const request = this.#lookupRequest;
+    const generation = this.#lookupGeneration;
     try {
       const fresh = request
         ? await waitForFreshLookupResults(this.#rootDocument, request, () => this.#lookupGeneration)
@@ -254,7 +270,7 @@ export class AcademicOfferController {
       if (fresh?.status === "stale") return { status: "stale", options: [] };
       const lookupDocument = fresh?.document ?? await waitForLookupResults(this.#rootDocument);
       if (!lookupDocument) return { status: "not-found", options: [] };
-      if (request && request.generation !== this.#lookupGeneration) {
+      if (generation !== this.#lookupGeneration) {
         return { status: "stale", options: [] };
       }
       const initial = readAcademicOfferLookup([lookupDocument]);
@@ -262,14 +278,17 @@ export class AcademicOfferController {
       if (initial?.state !== "results") return { status: "not-found", options: [] };
       const scroller = locateLookupScrollContainer(lookupDocument);
       const pageAction = locateLookupPageAction(lookupDocument);
-      if (!scroller && !pageAction) return { status: "complete", options: initial.options };
+      if (!scroller && !pageAction) {
+        this.#rememberLookupResults(lookupDocument, initial.options);
+        return { status: "complete", options: initial.options };
+      }
 
       const discovered = new Map(initial.options.map((option) => [lookupOptionKey(option), option]));
       let signature = lookupOptionsSignature(initial.options);
       let expanded = false;
       let unchanged = 0;
       for (let step = 0; step < LOOKUP_MAX_SCROLL_STEPS; step += 1) {
-        if (request && request.generation !== this.#lookupGeneration) {
+        if (generation !== this.#lookupGeneration) {
           return { status: "stale", options: [] };
         }
         if (pageAction) {
@@ -297,9 +316,12 @@ export class AcademicOfferController {
         unchanged += 1;
         if (unchanged >= 2) break;
       }
+      if (generation !== this.#lookupGeneration) return { status: "stale", options: [] };
+      const options = Array.from(discovered.values(), (option, index) => ({ ...option, index }));
+      this.#rememberLookupResults(lookupDocument, options);
       return {
         status: expanded ? "expanded" : "complete",
-        options: Array.from(discovered.values(), (option, index) => ({ ...option, index })),
+        options,
       };
     } finally {
       if (request) this.#discardLookupRequest(request);
@@ -309,12 +331,16 @@ export class AcademicOfferController {
   closeLookup(): AcademicOfferSearchResult {
     if (this.#busy) return "busy";
     const lookupDocument = locateActiveLookupDocument(this.#rootDocument);
-    if (!lookupDocument) return "activated";
+    if (!lookupDocument) {
+      this.#resetLookup();
+      return "activated";
+    }
     const action = lookupDocument ? locateLookupCloseAction(lookupDocument) : null;
     if (!action) return "not-found";
 
     this.#busy = true;
     try {
+      this.#resetLookup();
       action.click();
       return "activated";
     } finally {
@@ -322,10 +348,30 @@ export class AcademicOfferController {
     }
   }
 
+  #rememberLookupResults(document: Document, options: readonly AcademicOfferLookupOption[]): void {
+    this.#lookupResults = {
+      generation: this.#lookupGeneration,
+      document,
+      query: normalizeLookupIdentity(readLookupQuery(document)),
+      options,
+    };
+  }
+
+  #resetLookup(): void {
+    this.#discardLookupRequest();
+    this.#lookupGeneration += 1;
+    this.#lookupResults = undefined;
+  }
+
   async #ensureAcademicOfferControls(): Promise<{
     readonly input: HTMLInputElement;
     readonly action: HTMLElement;
   } | null> {
+    const lookupDocument = locateActiveLookupDocument(this.#rootDocument);
+    if (lookupDocument && !this.#lookupResults) {
+      const lookup = readAcademicOfferLookup([lookupDocument]);
+      if (lookup?.state === "results") this.#rememberLookupResults(lookupDocument, lookup.options);
+    }
     const current = await ensureAcademicOfferControls(this.#rootDocument);
     if (current || !this.#recover || !hasRecoverableAcademicOfferError(this.#rootDocument)) {
       return current;
@@ -880,11 +926,10 @@ async function waitForFreshOfferResults(
       const offer = readAcademicOffer(document);
       if (offer.state === "results" || offer.state === "empty") {
         const signature = offeringSignature(offer.offerings);
-        const responseChanged = document !== request.baselineDocument
-          || offer.state !== request.baselineState
-          || signature !== request.baselineSignature
-          || request.resultSurfaceChanged;
-        if (responseChanged) return { status: "fresh", document };
+        if (resultChanged(request, document, offer.state, signature)
+          && offer.offerings.every((offering) => matchesCourseCode(request.query, offering.code))) {
+          return { status: "fresh", document };
+        }
       }
     }
     await new Promise<void>((resolve) => setTimeout(resolve, 100));
@@ -893,25 +938,11 @@ async function waitForFreshOfferResults(
 }
 
 function mutationTouchesOfferResults(mutation: MutationRecord): boolean {
-  const nodes = [mutation.target, ...mutation.addedNodes, ...mutation.removedNodes];
-  return nodes.some((node) => {
-    const element = node.nodeType === Node.ELEMENT_NODE ? node as Element : node.parentElement;
-    if (!element) return false;
-    const closestTable = element.closest("table");
-    if (closestTable && readOfferTable(closestTable as HTMLTableElement).compatible) return true;
-    return Array.from(element.querySelectorAll<HTMLTableElement>("table"))
-      .some((table) => readOfferTable(table).compatible);
-  });
+  return mutationTouchesResultTable(mutation, (table) => readOfferTable(table).compatible);
 }
 
 function offeringSignature(offerings: readonly AcademicOffering[]): string {
-  return offerings.map((offering) => [
-    offering.code,
-    offering.name,
-    offering.block,
-    offering.schedule,
-    offering.capacity,
-  ].join("\u0000")).join("\u0001");
+  return JSON.stringify(offerings);
 }
 
 async function waitForLookupResults(rootDocument: Document): Promise<Document | null> {
@@ -945,12 +976,9 @@ async function waitForFreshLookupResults(
         const queryMatches = !lookup.query
           || normalizeLookupIdentity(lookup.query) === normalizeLookupIdentity(request.query);
         const signature = lookup.state === "results" ? lookupOptionsSignature(lookup.options) : "";
-        const responseChanged = document !== request.baselineDocument
-          || lookup.state !== request.baselineState
-          || signature !== request.baselineSignature
-          || request.resultSurfaceChanged
-          || normalizeLookupIdentity(request.baselineQuery) === normalizeLookupIdentity(request.query);
-        if (queryMatches && responseChanged) return { status: "fresh", document };
+        if (queryMatches && resultChanged(request, document, lookup.state, signature)) {
+          return { status: "fresh", document };
+        }
       }
     }
     await new Promise<void>((resolve) => setTimeout(resolve, 100));
@@ -959,19 +987,52 @@ async function waitForFreshLookupResults(
 }
 
 function mutationTouchesLookupResults(mutation: MutationRecord): boolean {
-  const nodes = [mutation.target, ...mutation.addedNodes, ...mutation.removedNodes];
-  return nodes.some((node) => {
-    const element = node.nodeType === Node.ELEMENT_NODE
-      ? node as Element
-      : node.parentElement;
-    if (!element) return false;
-    const closestTable = element.closest("table");
-    if (closestTable && readLookupTable(closestTable as HTMLTableElement).compatible) {
-      return true;
-    }
-    return Array.from(element.querySelectorAll<HTMLTableElement>("table"))
-      .some((table) => readLookupTable(table).compatible);
+  return mutationTouchesResultTable(mutation, (table) => {
+    if (readLookupTable(table).compatible) return true;
+    return isLookupGrid(table) && Array.from(table.querySelectorAll<HTMLTableElement>("table"))
+      .some((child) => readLookupTable(child).compatible);
   });
+}
+
+function mutationTouchesResultTable(
+  mutation: MutationRecord,
+  compatible: (table: HTMLTableElement) => boolean,
+): boolean {
+  const target = mutation.target.nodeType === Node.ELEMENT_NODE
+    ? mutation.target as Element
+    : mutation.target.parentElement;
+  let table = target?.closest<HTMLTableElement>("table") ?? null;
+  while (table) {
+    if (compatible(table)) return true;
+    table = table.parentElement?.closest<HTMLTableElement>("table") ?? null;
+  }
+  return [...mutation.addedNodes, ...mutation.removedNodes].some((node) => {
+    if (node.nodeType !== Node.ELEMENT_NODE) return false;
+    const element = node as Element;
+    return (element.matches("table") && compatible(element as HTMLTableElement))
+      || Array.from(element.querySelectorAll<HTMLTableElement>("table")).some(compatible);
+  });
+}
+
+function resultChanged(
+  request: OfferRequest | LookupRequest,
+  document: Document,
+  state: string,
+  signature: string,
+): boolean {
+  return document !== request.baselineDocument
+    || state !== request.baselineState
+    || signature !== request.baselineSignature
+    || request.resultSurfaceChanged;
+}
+
+function matchesCourseCode(query: string, code: string): boolean {
+  const pattern = Array.from(query, (character) => {
+    if (character === "*") return ".*";
+    if (character === "?") return ".";
+    return character.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }).join("");
+  return new RegExp(`^${pattern}$`, "iu").test(code.trim());
 }
 
 function normalizeLookupIdentity(value: string | undefined): string {

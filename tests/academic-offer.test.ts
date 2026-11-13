@@ -9,6 +9,21 @@ function resultDocumentWithoutSearchControls(): Document {
   return document;
 }
 
+async function rememberLookup(controller: AcademicOfferController, document: Document, code: string, name: string): Promise<void> {
+  const lookup = document.createElement("section");
+  lookup.innerHTML = `
+    <h2>Busqueda: Codigo de Asignatura</h2>
+    <input type="text" title="Nombre o Codigo de la asignatura">
+    <button type="button">Buscar</button><a href="#">Cerrar</a>
+    <table><tr><th>Abrev. objeto</th><th>Denominacion</th></tr><tr><td></td><td></td></tr></table>`;
+  const cells = lookup.querySelectorAll("td");
+  cells[0]!.textContent = code;
+  cells[1]!.textContent = name;
+  document.body.append(lookup);
+  await controller.hydrateLookupResults();
+  lookup.remove();
+}
+
 describe("academic offer", () => {
   it("recovers immediately when returning from results produces a 500", async () => {
     vi.useFakeTimers();
@@ -570,11 +585,13 @@ describe("academic offer", () => {
 
   it("runs another exact search from a lookup result kept in memory", async () => {
     const document = fixtureDocument("academic-offer-initial.html");
+    const controller = new AcademicOfferController(document);
+    await rememberLookup(controller, document, "SYN-FGE-03", "Electiva sintética conservada");
     const nativeSearch = document.querySelector<HTMLElement>(".lsButton");
     const nativeSearchClick = vi.fn();
     nativeSearch?.addEventListener("click", nativeSearchClick);
 
-    await expect(new AcademicOfferController(document).selectLookup({
+    await expect(controller.selectLookup({
       index: 2,
       code: "SYN-FGE-03",
       name: "Electiva sintética conservada",
@@ -630,6 +647,8 @@ describe("academic offer", () => {
 
   it("returns from a result before selecting another lookup option kept in memory", async () => {
     const document = resultDocumentWithoutSearchControls();
+    const controller = new AcademicOfferController(document);
+    await rememberLookup(controller, document, "SYN-FGE-04", "Electiva sintética nueva");
     const initial = fixtureDocument("academic-offer-initial.html");
     const returnAction = document.createElement("div");
     returnAction.tabIndex = 0;
@@ -639,10 +658,10 @@ describe("academic offer", () => {
     });
     document.body.append(returnAction);
 
-    await expect(new AcademicOfferController(document).selectLookup({
+    await expect(controller.selectLookup({
       index: 0,
       code: "SYN-FGE-04",
-      name: "Electiva sintÃ©tica nueva",
+      name: "Electiva sintética nueva",
     })).resolves.toBe("activated");
     expect(document.querySelector<HTMLInputElement>("input[maxlength='12']")?.value)
       .toBe("SYN-FGE-04");
@@ -650,6 +669,8 @@ describe("academic offer", () => {
 
   it("ignores a stale hidden native selector when switching persisted results", async () => {
     const document = resultDocumentWithoutSearchControls();
+    const controller = new AcademicOfferController(document);
+    await rememberLookup(controller, document, "SYN-FGE-05", "Electiva persistida");
     const initial = fixtureDocument("academic-offer-initial.html");
     const staleLookup = document.createElement("section");
     staleLookup.hidden = true;
@@ -672,7 +693,7 @@ describe("academic offer", () => {
     });
     document.body.append(returnAction);
 
-    await expect(new AcademicOfferController(document).selectLookup({
+    await expect(controller.selectLookup({
       index: 0,
       code: "SYN-FGE-05",
       name: "Electiva persistida",

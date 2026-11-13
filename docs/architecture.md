@@ -25,8 +25,8 @@ Unknown or ambiguous state
 
 - `src/content`: validates the exact runtime scope and coordinates startup.
 - `src/login`: presents the native Sirius login controls responsively without cloning fields, reading values, or submitting the form programmatically.
-- `src/academic`: parses compatible historical-grade, academic-offer, and offer value-help tables through stable semantic headers. The offer controller accepts an explicit course code or opens Sirius's visible name-or-code selector. A lookup requires an explicit search, an exact code/name row match, and one visible offer search; it never reads hidden fields or transport attributes.
-- `src/finance`: reads the four Web de Pagos totals, the pending-payment status, and message-count metadata already rendered by Sirius. The Pronto Pago reader runs in the observed statement frame and reads its visible line items, official exchange rate, and totals. An MV3 service worker relays the validated models to the same tab's portal frame. The relayed models contain no raw HTML, URLs, hidden state, identity fields, or payment controls.
+- `src/academic`: parses compatible historical-grade, academic-offer, and offer value-help tables through stable semantic headers. The offer controller accepts an explicit course code or opens Sirius's visible name-or-code selector. A lookup requires an explicit search, an exact code/name match in the current rows or current collected lookup results, and a visible offer search; it never reads hidden fields or transport attributes.
+- `src/finance`: reads the four Web de Pagos totals, the pending-payment status, and message-count metadata already rendered by Sirius. The Pronto Pago reader runs in the observed statement frame and reads its visible line items, official exchange rate, and totals. An MV3 service worker relays the validated models to the same tab's portal frame with their source document identity. When frames load or disappear, extension messages check that cached source documents still exist. These checks do not contact Sirius. The relayed models contain no raw HTML, URLs, hidden state, identity fields, or payment controls.
 - `src/detection`: recognizes portal and application state through stable paths, headings, labels, and table headers. Generated `WD...` IDs are never selectors.
 - `src/registry`: rescans current iframe instances and discards state when an iframe is replaced.
 - `src/navigation`: performs the single supported user-triggered read navigation by rediscovering exact semantic menu labels before each click. It never reads or replays transport state.
@@ -45,10 +45,10 @@ The application fingerprint model retains only a small application enum, screen-
 - Missing or duplicate navigation labels stop the read navigation instead of guessing.
 - Registration-window parsing retains only the four displayed scheduling values. Student names and identifiers beside that view are neither modeled nor rendered.
 - Web de Pagos parsing retains only the verified summary labels and formatted values. An incomplete financial summary is unknown, and the message-list shortcut reveals the native Sirius list instead of copying message content.
-- A missing, duplicate, or replaced academic-offer or value-help control stops the search; no request is reconstructed or retried.
-- SAP errors stop at a visible error state; no retry is available.
+- A missing or ambiguous academic-offer or value-help control stops the search. Replacement controls are rediscovered before activation; no request is reconstructed.
+- Offer and lookup searches may reopen the allowlisted offer view and repeat once after a recognized SAP error. A second error stops at a visible error state. Other operations do not retry automatically.
 - Session expiry directs the user to the original UI.
-- The original page stays mounted, and switching views changes only the extension overlay.
+- The original page stays mounted, and switching views changes only the extension overlay. A persisted pagehide preserves the shell for cached-page restoration; frame publishers clear their models on hide and republish them on show.
 
 ## Visual identity
 

@@ -4,11 +4,6 @@ import { readWebPayments } from "./web-payments";
 
 export const WEB_PAYMENTS_BRIDGE_KIND = "better-sirius:web-payments:v1";
 
-interface WebPaymentsBridgePayload {
-  readonly kind: typeof WEB_PAYMENTS_BRIDGE_KIND;
-  readonly model: WebPaymentsModel;
-}
-
 export function startWebPaymentsFramePublisher(
   frameWindow: Window,
   document: Document,
@@ -16,40 +11,50 @@ export function startWebPaymentsFramePublisher(
 ): () => void {
   let publishScheduled = false;
   let lastPayload = "";
+  let active = true;
+
+  const send = (model: WebPaymentsModel): void => {
+    frameWindow.top?.postMessage({ kind: WEB_PAYMENTS_BRIDGE_KIND, model }, SIRIUS_ORIGIN);
+    publishRuntime?.(model);
+  };
 
   const publish = (): void => {
     publishScheduled = false;
+    if (!active) return;
     const model = readWebPayments(document);
     const serialized = JSON.stringify(model);
     if (serialized === lastPayload) return;
     lastPayload = serialized;
-    frameWindow.top?.postMessage({
-      kind: WEB_PAYMENTS_BRIDGE_KIND,
-      model,
-    }, SIRIUS_ORIGIN);
-    publishRuntime?.(model);
+    send(model);
   };
   const schedulePublish = (): void => {
-    if (publishScheduled) return;
+    if (!active || publishScheduled) return;
     publishScheduled = true;
     queueMicrotask(publish);
   };
   const observer = new MutationObserver(schedulePublish);
-  if (document.documentElement) {
-    observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
-  }
   const clear = (): void => {
-    frameWindow.top?.postMessage(
-      { kind: WEB_PAYMENTS_BRIDGE_KIND, model: { state: "unavailable" } },
-      SIRIUS_ORIGIN,
-    );
+    active = false;
+    observer.disconnect();
+    lastPayload = "";
+    send({ state: "unavailable" });
   };
-  frameWindow.addEventListener("pagehide", clear, { once: true });
-  schedulePublish();
+  const observe = (): void => {
+    active = true;
+    if (document.documentElement) {
+      observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+    }
+    schedulePublish();
+  };
+  frameWindow.addEventListener("pagehide", clear);
+  frameWindow.addEventListener("pageshow", observe);
+  observe();
 
   return () => {
+    active = false;
     observer.disconnect();
     frameWindow.removeEventListener("pagehide", clear);
+    frameWindow.removeEventListener("pageshow", observe);
   };
 }
 
