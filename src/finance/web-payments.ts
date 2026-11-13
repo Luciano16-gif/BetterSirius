@@ -1,7 +1,7 @@
 import type { WebPaymentsModel } from "../core/types";
 import { normalizedText } from "../detection/text";
 
-const AMOUNT_PATTERN = /-?\d+(?:[.\s]\d{3})*,\d{2}/u;
+const AMOUNT_PATTERN = /(?<![\d.,])-?\d+(?:[.\s]\d{3})*,\d{2}(?![\d.,])/u;
 const VALUE_CONTAINERS = "td, th, span, p, strong, b, div, tr, section";
 
 const LABELS = {
@@ -61,7 +61,11 @@ function findLabeledAmount(documents: readonly Document[], label: string): strin
 
   for (const text of candidates) {
     const remainder = text.slice(text.indexOf(label) + label.length);
-    const amount = AMOUNT_PATTERN.exec(remainder)?.[0];
+    const nextLabel = Object.values(LABELS)
+      .map((otherLabel) => remainder.indexOf(otherLabel))
+      .filter((index) => index >= 0);
+    const valueText = remainder.slice(0, Math.min(remainder.length, ...nextLabel));
+    const amount = AMOUNT_PATTERN.exec(valueText)?.[0];
     if (amount) return amount.replace(/\s+/g, "");
   }
   return undefined;

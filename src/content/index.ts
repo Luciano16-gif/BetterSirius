@@ -24,7 +24,9 @@ import {
 } from "../finance/web-payments-bridge";
 import {
   listenForWebPaymentsRuntime,
+  listenForWebPaymentsRuntimeProbe,
   publishWebPaymentsRuntime,
+  validateWebPaymentsRuntimeSources,
 } from "../finance/web-payments-runtime";
 import { listenForProntoPago } from "../finance/pronto-pago-runtime";
 
@@ -36,7 +38,7 @@ function start(): void {
   if (detection.kind === "login") {
     const login = mountBetterSiriusLogin(document);
     if (!login) return;
-    window.addEventListener("pagehide", () => login.dispose(), { once: true });
+    disposeOnPageHide(() => login.dispose());
     return;
   }
 
@@ -69,10 +71,12 @@ function start(): void {
   let prontoPagoTimeout: number | undefined;
   let prontoPagoSource: string | undefined;
   let shell: ReturnType<typeof mountBetterSiriusShell>;
-  const bridgedWebPayments = new Map<unknown, WebPaymentsModel>();
-  const runtimePaymentSource = Symbol("web-payments-runtime");
+  const bridgedWebPayments = new Map<string | Window, WebPaymentsModel>();
+  let paymentFrames: ReadonlySet<HTMLIFrameElement> = new Set();
+  let localWebPayments: WebPaymentsModel = { state: "unavailable" };
 
   const readBridgedWebPayments = (): WebPaymentsModel => {
+    if (localWebPayments.state !== "unavailable") return localWebPayments;
     let selected: WebPaymentsModel = { state: "unavailable" };
     for (const candidate of bridgedWebPayments.values()) {
       if (webPaymentsPriority(candidate) > webPaymentsPriority(selected)) selected = candidate;
@@ -80,7 +84,7 @@ function start(): void {
     return selected;
   };
   const acceptBridgedPayment = (
-    source: unknown,
+    source: string | Window,
     paymentModel: WebPaymentsModel,
   ): void => {
     if (paymentModel.state === "unavailable") bridgedWebPayments.delete(source);
@@ -95,14 +99,16 @@ function start(): void {
     shell?.update(model);
   };
   const onFrameMessage = (event: MessageEvent): void => {
-    if (!event.source) return;
+    if (stopRuntimePayments || !event.source) return;
+    const source = Array.from(paymentFrames).find((frame) => frame.contentWindow === event.source)?.contentWindow;
+    if (!source) return;
     const paymentModel = webPaymentsFromBridgeEvent(event);
     if (!paymentModel) return;
-    acceptBridgedPayment(event.source, paymentModel);
+    acceptBridgedPayment(source, paymentModel);
   };
   window.addEventListener("message", onFrameMessage);
-  const stopRuntimePayments = listenForWebPaymentsRuntime((paymentModel) => {
-    acceptBridgedPayment(runtimePaymentSource, paymentModel);
+  const stopRuntimePayments = listenForWebPaymentsRuntime((source, paymentModel) => {
+    acceptBridgedPayment(source, paymentModel);
   });
   const clearProntoPagoTimeout = (): void => {
     if (prontoPagoTimeout !== undefined) window.clearTimeout(prontoPagoTimeout);
@@ -410,6 +416,9 @@ function start(): void {
     onCloseAcademicOfferLookup: async () => {
       const result = offerController.closeLookup();
       if (result === "activated") {
+        offerLookupRequestId += 1;
+        if (offerLookupTimeout !== undefined) window.clearTimeout(offerLookupTimeout);
+        offerLookupTimeout = undefined;
         const { lookup: _discardedLookup, ...academicOffer } = model.academicOffer;
         model = { ...model, academicOffer };
         shell.update(model);
@@ -467,10 +476,8 @@ function start(): void {
       window.clearTimeout(registrationWindowTimeout);
       registrationWindowTimeout = undefined;
     }
-    const bridgedPayments = readBridgedWebPayments();
-    const observedWebPayments = webPaymentsPriority(bridgedPayments) > webPaymentsPriority(webPayments)
-      ? bridgedPayments
-      : webPayments;
+    localWebPayments = webPayments;
+    const observedWebPayments = readBridgedWebPayments();
     const coordinatedWebPayments = model.webPayments.pending
       && observedWebPayments.state !== "results"
       ? model.webPayments
@@ -490,28 +497,45 @@ function start(): void {
     };
     shell.update(model);
     },
+    (frames) => {
+      paymentFrames = frames;
+      const liveWindows = new Set(Array.from(frames, (frame) => frame.contentWindow));
+      for (const source of bridgedWebPayments.keys()) {
+        if (typeof source !== "string" && !liveWindows.has(source)) {
+          acceptBridgedPayment(source, { state: "unavailable" });
+        }
+      }
+      validateWebPaymentsRuntimeSources(
+        Array.from(bridgedWebPayments.keys()).filter((source): source is string => typeof source === "string"),
+      );
+    },
   );
 
   if (detection.kind === "portal-shell") registry.start();
 
-  window.addEventListener(
-    "pagehide",
-    () => {
-      registry.stop();
-      if (historyTimeout !== undefined) window.clearTimeout(historyTimeout);
-      if (offerTimeout !== undefined) window.clearTimeout(offerTimeout);
-      if (offerLookupTimeout !== undefined) window.clearTimeout(offerLookupTimeout);
-      if (registrationWindowTimeout !== undefined) window.clearTimeout(registrationWindowTimeout);
-      if (webPaymentsTimeout !== undefined) window.clearTimeout(webPaymentsTimeout);
-      clearProntoPagoTimeout();
-      window.removeEventListener("message", onFrameMessage);
-      stopRuntimePayments();
-      stopProntoPago();
-      bridgedWebPayments.clear();
-      shell.dispose();
-    },
-    { once: true },
-  );
+  disposeOnPageHide(() => {
+    registry.stop();
+    if (historyTimeout !== undefined) window.clearTimeout(historyTimeout);
+    if (offerTimeout !== undefined) window.clearTimeout(offerTimeout);
+    if (offerLookupTimeout !== undefined) window.clearTimeout(offerLookupTimeout);
+    if (registrationWindowTimeout !== undefined) window.clearTimeout(registrationWindowTimeout);
+    if (webPaymentsTimeout !== undefined) window.clearTimeout(webPaymentsTimeout);
+    clearProntoPagoTimeout();
+    window.removeEventListener("message", onFrameMessage);
+    stopRuntimePayments?.();
+    stopProntoPago();
+    bridgedWebPayments.clear();
+    shell.dispose();
+  });
+}
+
+function disposeOnPageHide(dispose: () => void): void {
+  const onPageHide = (event: PageTransitionEvent): void => {
+    if (event.persisted) return;
+    window.removeEventListener("pagehide", onPageHide);
+    dispose();
+  };
+  window.addEventListener("pagehide", onPageHide);
 }
 
 function webPaymentsPriority(model: WebPaymentsModel): number {
@@ -519,6 +543,7 @@ function webPaymentsPriority(model: WebPaymentsModel): number {
 }
 
 if (window.top !== window) {
+  listenForWebPaymentsRuntimeProbe();
   startWebPaymentsFramePublisher(window, document, publishWebPaymentsRuntime);
 } else {
   try {

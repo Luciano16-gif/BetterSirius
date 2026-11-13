@@ -36,6 +36,7 @@ export type RegistryListener = (snapshot: RegistrySnapshot) => void;
 export class FrameRegistry {
   readonly #rootDocument: Document;
   readonly #listener: RegistryListener;
+  readonly #onFramesChanged: ((frames: ReadonlySet<HTMLIFrameElement>) => void) | undefined;
   readonly #observer: MutationObserver;
   readonly #frameStates = new Map<HTMLIFrameElement, FrameState>();
   readonly #loadHandlers = new Map<HTMLIFrameElement, EventListener>();
@@ -44,9 +45,14 @@ export class FrameRegistry {
   #healthTimer: number | undefined;
   #lastSnapshotSignature = "";
 
-  constructor(rootDocument: Document, listener: RegistryListener) {
+  constructor(
+    rootDocument: Document,
+    listener: RegistryListener,
+    onFramesChanged?: (frames: ReadonlySet<HTMLIFrameElement>) => void,
+  ) {
     this.#rootDocument = rootDocument;
     this.#listener = listener;
+    this.#onFramesChanged = onFramesChanged;
     this.#observer = new MutationObserver(() => this.#scheduleScan());
   }
 
@@ -63,6 +69,7 @@ export class FrameRegistry {
   }
 
   stop(): void {
+    this.#scanScheduled = false;
     this.#observer.disconnect();
     for (const [frame, handler] of this.#loadHandlers) frame.removeEventListener("load", handler);
     this.#loadHandlers.clear();
@@ -76,11 +83,16 @@ export class FrameRegistry {
     this.#lastSnapshotSignature = "";
   }
 
-  scan(): void {
+  scan(frameLoaded = false): void {
     this.#scanScheduled = false;
     const currentFrames = new Set<HTMLIFrameElement>();
     const currentDocuments = new Set<Document>();
     this.#collectFrames(this.#rootDocument, currentFrames, currentDocuments, new Set());
+    const framesChanged = frameLoaded
+      || currentFrames.size !== this.#loadHandlers.size
+      || Array.from(currentFrames).some((frame) => !this.#loadHandlers.has(frame))
+      || currentDocuments.size !== this.#documentObservers.size
+      || Array.from(currentDocuments).some((document) => !this.#documentObservers.has(document));
 
     for (const frame of this.#loadHandlers.keys()) {
       if (!currentFrames.has(frame)) this.#forget(frame);
@@ -88,7 +100,7 @@ export class FrameRegistry {
 
     for (const frame of currentFrames) {
       if (!this.#loadHandlers.has(frame)) {
-        const handler: EventListener = () => this.scan();
+        const handler: EventListener = () => this.scan(true);
         frame.addEventListener("load", handler);
         this.#loadHandlers.set(frame, handler);
       }
@@ -96,6 +108,7 @@ export class FrameRegistry {
     }
 
     this.#syncDocumentObservers(currentDocuments);
+    if (framesChanged) this.#onFramesChanged?.(currentFrames);
     this.#emit();
   }
 
