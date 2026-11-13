@@ -16,6 +16,7 @@ import type {
   AcademicOfferModel,
   AcademicOffering,
   DetectedApplication,
+  ProntoPagoModel,
   RegistrationWindowModel,
   ShellModel,
   SupportedApplication,
@@ -32,6 +33,7 @@ export interface ShellOptions {
   readonly onOpenPeriodGrades?: () => Promise<ReadOnlyNavigationResult>;
   readonly onOpenAcademicOffer?: () => Promise<ReadOnlyNavigationResult>;
   readonly onOpenRegistrationWindow?: () => Promise<ReadOnlyNavigationResult>;
+  readonly onOpenProntoPago?: () => Promise<ReadOnlyNavigationResult>;
   readonly onOpenWebPayments?: () => Promise<ReadOnlyNavigationResult>;
   readonly onOpenWebPaymentMessages?: () => Promise<ReadOnlyNavigationResult>;
   readonly onSearchAcademicOffer?: (code: string) => Promise<AcademicOfferSearchResult>;
@@ -48,6 +50,10 @@ export interface ShellOptions {
 }
 
 type GradeInquiryKind = "historical" | "period";
+type PaymentView = "pronto-pago" | "web-payments";
+
+const PRONTO_PAGO_LABEL = "Descuento por Pronto Pago";
+const WEB_PAYMENTS_LABEL = "Web de Pagos";
 
 const APPLICATION_LABELS: Readonly<Record<SupportedApplication, string>> = {
   "historical-grades": "Consulta Calificaciones Históricas",
@@ -93,8 +99,17 @@ export function mountBetterSiriusShell(
     shadow.querySelectorAll<HTMLButtonElement>(".navigation [data-route]"),
   );
   const panels = Array.from(shadow.querySelectorAll<HTMLElement>("[data-panel]"));
+  const paymentsPanel = requiredElement<HTMLElement>(shadow, "[data-panel='payments']");
+  const paymentTitle = requiredElement<HTMLElement>(paymentsPanel, "[data-payments-title]");
+  const paymentStatus = requiredElement<HTMLElement>(paymentsPanel, "[data-payments-action-status]");
+  const prontoPagoView = requiredElement<HTMLElement>(paymentsPanel, "[data-pronto-pago-view]");
+  const webPaymentsView = requiredElement<HTMLElement>(paymentsPanel, "[data-payments-view]");
+  const prontoPagoSwitch = requiredElement<HTMLButtonElement>(paymentsPanel, ".payment-switch[data-open-pronto-pago]");
+  const webPaymentsSwitch = requiredElement<HTMLButtonElement>(paymentsPanel, ".payment-switch[data-open-web-payments]");
   let currentModel = initialModel;
   let gradeInquiry: GradeInquiryKind = "historical";
+  let openingPayment = false;
+  let activePayment: PaymentView | undefined;
   let pendingOfferResultFocus: string | undefined;
 
   const showOriginal = (): void => {
@@ -125,10 +140,13 @@ export function mountBetterSiriusShell(
 
   const showPanel = (view: string, route = view, academicFocus?: string): void => {
     for (const button of navigationTargets) {
-      const active = button.dataset.route === route
+      const current = button.dataset.route === route;
+      const active = current
+        || (button.dataset.route === "payments" && route === "web-payments")
         || (button.dataset.route === "academic" && ["enrollment", "term", "requests"].includes(route));
       button.classList.toggle("is-active", active);
-      button.setAttribute("aria-current", active ? "page" : "false");
+      const currentPage = current || (active && button.dataset.route === "academic");
+      button.setAttribute("aria-current", currentPage ? "page" : "false");
     }
     for (const panel of panels) panel.hidden = panel.dataset.panel !== view;
     if (academicFocus) {
@@ -136,6 +154,44 @@ export function mountBetterSiriusShell(
       if (target instanceof HTMLDetailsElement) target.open = true;
       target?.scrollIntoView?.({ block: "start" });
     }
+  };
+
+  const openPayment = async (view: PaymentView): Promise<void> => {
+    if (openingPayment) return;
+    const isProntoPago = view === "pronto-pago";
+    const label = isProntoPago ? PRONTO_PAGO_LABEL : WEB_PAYMENTS_LABEL;
+    showPanel("payments", isProntoPago ? "payments" : "web-payments");
+    paymentTitle.textContent = label;
+    prontoPagoView.hidden = !isProntoPago;
+    webPaymentsView.hidden = isProntoPago;
+    prontoPagoSwitch.hidden = isProntoPago;
+    webPaymentsSwitch.hidden = !isProntoPago;
+    paymentStatus.hidden = true;
+    if (host.dataset.mode === "original") showEnhanced();
+    paymentTitle.focus();
+
+    const needsNavigation = activePayment !== undefined && activePayment !== view;
+    const available = isProntoPago
+      ? currentModel.prontoPago.state === "opening" || currentModel.prontoPago.state === "results"
+      : currentModel.webPayments.pending || currentModel.webPayments.state === "results";
+    if (!needsNavigation && available) return;
+
+    openingPayment = true;
+    prontoPagoSwitch.disabled = true;
+    webPaymentsSwitch.disabled = true;
+    const action = isProntoPago ? options.onOpenProntoPago : options.onOpenWebPayments;
+    const result = action ? await action().catch(() => "not-found" as const) : "not-found";
+    openingPayment = false;
+    prontoPagoSwitch.disabled = false;
+    webPaymentsSwitch.disabled = false;
+    paymentStatus.hidden = result === "activated";
+    if (result !== "activated") {
+      paymentStatus.textContent = result === "busy"
+        ? "Ya hay una consulta en curso. Inténtalo de nuevo en unos segundos."
+        : `No se pudo abrir ${label} en Sirius.`;
+      return;
+    }
+    activePayment = view;
   };
 
   for (const button of originalButtons) button.addEventListener("click", showOriginal);
@@ -259,16 +315,11 @@ export function mountBetterSiriusShell(
       );
       return;
     }
-    const webPaymentsTarget = event.target instanceof Element
-      ? event.target.closest<HTMLButtonElement>("[data-open-web-payments]")
+    const paymentTarget = event.target instanceof Element
+      ? event.target.closest<HTMLButtonElement>("[data-open-pronto-pago], [data-open-web-payments]")
       : null;
-    if (webPaymentsTarget) {
-      showPanel("payments", "payments");
-      const canReuseCurrentApplication = currentModel.webPayments.pending !== undefined
-        || currentModel.webPayments.state === "results";
-      if (!canReuseCurrentApplication) {
-        void openWebPayments(webPaymentsTarget, options.onOpenWebPayments);
-      }
+    if (paymentTarget) {
+      void openPayment(paymentTarget.hasAttribute("data-open-pronto-pago") ? "pronto-pago" : "web-payments");
       return;
     }
     const registrationWindowTarget = event.target instanceof Element
@@ -721,28 +772,55 @@ function renderModel(root: ShadowRoot, model: ShellModel, inquiry: GradeInquiryK
   renderAcademicHistory(root, model.academicHistory, inquiry);
   renderAcademicOffer(root, model.academicOffer);
   renderRegistrationWindow(root, model.registrationWindow);
+  renderProntoPago(root, model.prontoPago);
   renderWebPayments(root, model.webPayments);
 }
 
-async function openWebPayments(
-  button: HTMLButtonElement,
-  action: ShellOptions["onOpenWebPayments"],
-): Promise<void> {
-  const status = button.closest<HTMLElement>("[data-panel]")
-    ?.querySelector<HTMLElement>("[data-payments-action-status]");
-  button.disabled = true;
-  if (status) {
-    status.hidden = false;
-    status.textContent = "Abriendo Web de Pagos…";
+function renderProntoPago(root: ShadowRoot, model: ProntoPagoModel): void {
+  const container = requiredElement<HTMLElement>(root, "[data-pronto-pago-view]");
+  if (model.state === "opening") {
+    container.innerHTML = `
+      <div class="payments-loading" role="status">
+        <div><span class="loading-rule"></span><h2>Cargando el estado de cuenta</h2><p>Esperando la respuesta de Sirius.</p></div>
+        <div class="payments-skeleton" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+      </div>`;
+    return;
   }
-  const result = action ? await action() : "not-found";
-  if (result === "activated" || !button.isConnected) return;
-  button.disabled = false;
-  if (status) {
-    status.textContent = result === "busy"
-      ? "Ya hay una consulta en curso."
-      : "No pude abrir Web de Pagos de forma segura.";
+  if (model.state !== "results") {
+    container.innerHTML = `
+      <div class="payments-empty">
+        <h2>${model.state === "unknown" ? "No se pudo mostrar el estado de cuenta" : "Estado de cuenta Pronto Pago"}</h2>
+        <p>${model.state === "unknown" ? "Vuelve a cargarlo o consulta la página original de Sirius." : "Abre el estado de cuenta para ver los cargos y descuentos de Sirius."}</p>
+        <button class="primary-action" type="button" data-open-pronto-pago>${model.state === "unknown" ? "Volver a cargar" : "Cargar estado de cuenta"} ${ICONS.arrow}</button>
+      </div>`;
+    return;
   }
+  const rows = model.lines.map((line) => `
+    <tr${line.discount ? ' class="discount-row"' : ""}>
+      <td>${escapeHtml(line.date)}</td><td>${escapeHtml(line.concept)}</td><td>${escapeHtml(line.amountUsd)}</td>
+    </tr>`).join("");
+  container.innerHTML = `
+    <section class="pronto-statement" aria-labelledby="pronto-statement-title">
+      <header class="pronto-header">
+        <h2 id="pronto-statement-title">Estado de cuenta Pronto Pago</h2>
+        <div class="pronto-rate">
+          <span>Tasa BCV Oficial</span><strong>${escapeHtml(model.exchangeRate)}</strong>
+          ${model.exchangeDate ? `<span>${escapeHtml(model.exchangeDate)}</span>` : ""}
+        </div>
+      </header>
+      ${rows ? `<table class="pronto-lines" aria-label="Detalle del estado de cuenta">
+        <thead><tr><th scope="col">Fecha</th><th scope="col">Detalle del concepto</th><th scope="col">Monto USD</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>` : '<p class="pronto-no-lines">Sirius no muestra movimientos en este estado de cuenta.</p>'}
+      <dl class="pronto-totals">
+        <div><dt>Total USD</dt><dd>${escapeHtml(model.totalUsd)}</dd></div>
+        <div><dt>Total Bs.</dt><dd>${escapeHtml(model.totalBs)}</dd></div>
+      </dl>
+      <footer class="pronto-footer"><button class="secondary-action" type="button" data-show-pronto-original>Ver opciones de pago en Sirius ${ICONS.external}</button></footer>
+    </section>`;
+  requiredElement<HTMLButtonElement>(container, "[data-show-pronto-original]").addEventListener("click", () => {
+    requiredElement<HTMLButtonElement>(root, "[data-show-original]").click();
+  });
 }
 
 async function openWebPaymentMessages(
@@ -811,7 +889,6 @@ function renderWebPayments(root: ShadowRoot, model: WebPaymentsModel): void {
       <button class="primary-action" type="button" data-open-web-payments>
         ${unknown ? "Volver a abrir" : "Ir a Web de Pagos"} ${ICONS.arrow}
       </button>
-      <p class="action-status" data-payments-action-status role="status" hidden></p>
     </div>`;
 }
 
@@ -1418,10 +1495,10 @@ function markup(): string {
             </div>
           </div>
           <div class="nav-section">
-            <button class="nav-item" type="button" data-view="payments" data-route="payments" data-open-web-payments>${ICONS.views}<span class="nav-label-wide">Procesos Administrativos</span><span class="nav-label-mobile">Pagos</span></button>
+            <button class="nav-item" type="button" data-route="payments" data-open-pronto-pago>${ICONS.views}<span class="nav-label-wide">Procesos Administrativos</span><span class="nav-label-mobile">Pagos</span></button>
             <div class="nav-tree" aria-label="Procesos Administrativos">
               <span>Finanzas</span>
-              <button type="button" data-view="payments" data-route="payments" data-open-web-payments>Web de Pagos</button>
+              <button type="button" data-route="web-payments" data-open-web-payments>${WEB_PAYMENTS_LABEL}</button>
             </div>
           </div>
         </nav>
@@ -1430,7 +1507,7 @@ function markup(): string {
       <main class="content">
         <header class="topbar">
           <div><span class="read-only-badge"><i></i> Solo lectura</span></div>
-          <button class="original-button" type="button" data-show-original>${ICONS.external}<span>Ver Sirius original</span></button>
+          <button class="original-button" type="button" data-show-original aria-label="Ver Sirius original">${ICONS.external}<span>Ver Sirius original</span></button>
         </header>
 
         <section class="panel" data-panel="home">
@@ -1447,7 +1524,7 @@ function markup(): string {
           <div class="home-actions">
             <button type="button" data-view="academic" data-route="academic"><span>Ver Procesos Académicos</span><strong><span data-academic-total>00</span> opciones</strong>${ICONS.arrow}</button>
             <button type="button" data-view="history" data-route="requests"><span>Consulta Calificaciones Históricas</span><strong><span data-history-count>—</span> materias</strong>${ICONS.arrow}</button>
-            <button type="button" data-view="payments" data-route="payments" data-open-web-payments><span>Ir a Web de Pagos</span><strong>Ver estado de cuenta</strong>${ICONS.arrow}</button>
+            <button type="button" data-open-pronto-pago><span>${PRONTO_PAGO_LABEL}</span><strong>Ver estado de cuenta</strong>${ICONS.arrow}</button>
           </div>
         </section>
 
@@ -1477,12 +1554,15 @@ function markup(): string {
         </section>
 
         <section class="panel" data-panel="payments" hidden>
-          <div class="breadcrumb">Procesos Administrativos <span>/</span> Web de Pagos</div>
+          <div class="breadcrumb">Procesos Administrativos</div>
           <div class="page-heading payments-heading">
-            <div><span class="eyebrow">Consulta</span><h1>Web de Pagos</h1></div>
+            <h1 data-payments-title tabindex="-1">${PRONTO_PAGO_LABEL}</h1>
+            <button class="secondary-action payment-switch" type="button" data-open-web-payments>${WEB_PAYMENTS_LABEL} ${ICONS.arrow}</button>
+            <button class="secondary-action payment-switch" type="button" data-open-pronto-pago hidden>${PRONTO_PAGO_LABEL} ${ICONS.arrow}</button>
           </div>
           <p class="action-status" data-payments-action-status role="status" hidden></p>
-          <div data-payments-view></div>
+          <div data-pronto-pago-view></div>
+          <div data-payments-view hidden></div>
         </section>
 
         <section class="panel" data-panel="academic" hidden>
@@ -1593,8 +1673,32 @@ function styles(): string {
     .registration-window-empty > p, .registration-window-loading > p { max-width: 590px; margin-bottom: 18px; color: var(--muted); font-size: 13px; line-height: 1.55; }
     .registration-window-skeleton { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 34px; }
     .registration-window-skeleton span { display: block; height: 92px; border-radius: 8px; background: #e6ebf2; }
-    .payments-heading { padding-bottom: 34px; border-bottom: 2px solid var(--blue); }
-    .payments-heading h1 { margin: 14px 0 0; }
+    .page-heading.payments-heading { display: flex; flex-wrap: wrap; align-items: end; gap: 12px 24px; padding-bottom: 24px; border-bottom: 2px solid var(--blue); }
+    .payments-heading h1 { flex: 1 1 300px; margin: 0; }
+    .payments-heading h1:focus { outline: none; }
+    .payment-switch { min-height: 44px; }
+    .payment-switch:hover:not(:disabled) { text-decoration: underline; text-underline-offset: .2em; }
+    .payment-switch[hidden] { display: none; }
+    .pronto-statement { margin-top: 26px; padding: clamp(16px, 3vw, 32px); border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+    .pronto-header { display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: 16px; margin-bottom: 26px; }
+    .pronto-header h2 { margin: 0; font-size: 22px; line-height: 1.2; color: var(--blue); }
+    .pronto-rate { display: grid; gap: 3px; min-width: 155px; padding: 10px 14px; border-radius: 8px; color: var(--blue); background: var(--blue-soft); font-size: 12px; }
+    .pronto-rate strong { font-size: 18px; font-variant-numeric: tabular-nums; }
+    .pronto-lines { width: 100%; border-collapse: collapse; font-size: 14px; }
+    .pronto-lines :is(th, td) { padding: 12px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    .pronto-lines th { color: var(--blue); background: var(--paper); }
+    .pronto-lines :is(th, td):last-child { text-align: right; }
+    .pronto-lines td:first-child, .pronto-lines td:last-child { font-variant-numeric: tabular-nums; }
+    .pronto-lines td:nth-child(2) { overflow-wrap: anywhere; }
+    .pronto-lines td:last-child { font-weight: 700; }
+    .pronto-lines .discount-row { color: #18563d; background: #eef8f1; font-weight: 650; }
+    .pronto-no-lines { margin-bottom: 0; color: var(--muted); }
+    .pronto-totals { display: flex; flex-wrap: wrap; justify-content: end; gap: 10px; margin: 22px 0 0; }
+    .pronto-totals > div { flex: 0 1 190px; min-width: 0; padding: 12px 16px; border-radius: 8px; background: var(--blue); color: #fff; }
+    .pronto-totals > div:last-child { background: var(--accent-soft); color: var(--ink); }
+    .pronto-totals dt { font-size: 12px; font-weight: 650; }
+    .pronto-totals dd { margin: 4px 0 0; font-size: 22px; font-weight: 750; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+    .pronto-footer { display: flex; justify-content: end; margin-top: 12px; }
     .payments-status { display: flex; align-items: center; gap: 11px; padding: 17px 0; border-bottom: 1px solid var(--line); color: var(--ink); }
     .payments-status > span { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; color: #fff; background: var(--accent-strong); }
     .payments-status > span svg { width: 16px; }
@@ -1821,7 +1925,7 @@ function styles(): string {
     .safety-list span { color: #84908c; font-family: ui-monospace, "Cascadia Mono", monospace; font-size: 11px; }
     .safety-list h3 { margin: 0; font-size: 15px; }
     .safety-list p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.55; }
-    .return-button { position: static; pointer-events: auto; border-color: #e97620; color: var(--blue); background: var(--accent); box-shadow: 0 14px 34px rgba(124,52,5,.2); }
+    .return-button { box-shadow: 0 14px 34px rgba(124,52,5,.2); }
     .return-button[hidden] { display: none; }
     @keyframes enter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
     @media (max-width: 760px) {
@@ -1864,6 +1968,10 @@ function styles(): string {
       .registration-window-times article + article { padding-left: 2px; border-top: 1px solid var(--line); border-left: 0; }
       .registration-window-skeleton { grid-template-columns: 1fr; }
       .payments-heading h1 { font-size: 36px; line-height: 1.02; }
+      .pronto-lines { font-size: 12px; }
+      .pronto-lines :is(th, td) { padding: 9px 5px; }
+      .pronto-totals > div { flex: 1 1 115px; }
+      .pronto-totals dd { font-size: 18px; }
       .payments-summary { grid-template-columns: 1fr; }
       .payments-summary article, .payments-summary article:nth-child(even) { padding: 24px 2px; border-right: 0; border-bottom: 1px solid var(--line); }
       .payments-summary article:last-child { border-bottom: 0; }

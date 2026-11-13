@@ -1,14 +1,24 @@
 import type { ShellModel } from "../src/core/types";
 import { academicProcessCatalog } from "../src/academic/processes";
+import { FinancialNavigator } from "../src/navigation/financial-navigator";
+import { readProntoPago } from "../src/finance/pronto-pago";
 import { mountBetterSiriusShell } from "../src/ui/shell";
 
 const parameters = new URLSearchParams(window.location.search);
 const state = parameters.get("state");
 const syntheticControl = document.querySelector<HTMLButtonElement>("#synthetic-sap-control");
 const syntheticResult = document.querySelector<HTMLOutputElement>("#synthetic-sap-result");
+const syntheticDiscount = document.querySelector<HTMLElement>("#synthetic-pronto-pago-view");
+const financialNavigator = new FinancialNavigator(document);
 
 syntheticControl?.addEventListener("click", () => {
   if (syntheticResult) syntheticResult.value = "Control activado";
+});
+document.querySelector("#synthetic-pronto-pago")?.addEventListener("click", () => {
+  if (syntheticDiscount) syntheticDiscount.hidden = false;
+});
+document.querySelector("#synthetic-web-payments")?.addEventListener("click", () => {
+  if (syntheticDiscount) syntheticDiscount.hidden = true;
 });
 const model: ShellModel = {
   portalState: state === "error" ? "sap-error" : state === "expired" ? "session-expired" : "portal-shell",
@@ -84,6 +94,7 @@ const model: ShellModel = {
           ],
         },
   registrationWindow: { state: "unavailable" },
+  prontoPago: { state: "unavailable" },
   webPayments: state === "payments-loading"
     ? { state: "unavailable", pending: "opening" }
     : {
@@ -107,13 +118,34 @@ const model: ShellModel = {
         ],
 };
 
-mountBetterSiriusShell(document, model);
+const shell = mountBetterSiriusShell(document, model, {
+  onOpenProntoPago: async () => {
+    shell.update({ ...model, prontoPago: { state: "opening" } });
+    const result = await financialNavigator.openProntoPago();
+    const prontoPago = state === "pronto-unknown" ? { state: "unknown" as const } : readProntoPago(document);
+    shell.update({ ...model, prontoPago });
+    return result;
+  },
+  onOpenWebPayments: async () => {
+    const result = await financialNavigator.openWebPayments();
+    shell.update(model);
+    return result;
+  },
+});
 
 const requestedPanel = parameters.get("panel");
-if (["academic", "history", "payments"].includes(requestedPanel ?? "")) {
+if (["academic", "history"].includes(requestedPanel ?? "")) {
   document
     .getElementById("better-sirius-root")
     ?.shadowRoot?.querySelector<HTMLButtonElement>(`[data-view='${requestedPanel}']`)
+    ?.click();
+}
+
+if (requestedPanel === "payments" || requestedPanel === "web-payments") {
+  const route = requestedPanel === "web-payments" ? "web-payments" : "payments";
+  document
+    .getElementById("better-sirius-root")
+    ?.shadowRoot?.querySelector<HTMLButtonElement>(`[data-route='${route}']`)
     ?.click();
 }
 

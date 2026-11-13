@@ -11,6 +11,23 @@
       <p>Este contenido local representa la página original detrás de la capa.</p>
       <button id="synthetic-sap-control" type="button">Probar control sintético</button>
       <output id="synthetic-sap-result" style="display: block; margin-top: 1rem">Sin activar</output>
+      <nav aria-label="Procesos Administrativos">
+        <button id="synthetic-pronto-pago" type="button">Descuento por Pronto Pago</button>
+        <button id="synthetic-web-payments" type="button">Web de Pagos</button>
+      </nav>
+      <section id="synthetic-pronto-pago-view" class="card" hidden>
+        <h1>Estado de cuenta Pronto Pago</h1>
+        <div><small>Tasa BCV Oficial</small><b>40,00 Bs.</b><span>Lunes, 1 Enero 2099</span></div>
+        <table>
+          <thead><tr><th>Fecha</th><th>Detalle del Concepto</th><th>Monto USD</th></tr></thead>
+          <tbody>
+            <tr><td>01/01/2099</td><td>Módulos académicos de ejemplo</td><td>$ 100,00</td></tr>
+            <tr class="is-desc"><td>01/01/2099</td><td>Descuento de Pronto Pago</td><td>$ -10,00</td></tr>
+          </tbody>
+        </table>
+        <div><small>Total USD</small><span>$ 90,00</span></div>
+        <div><small>Total BS</small><span>Bs. 3.600,00</span></div>
+      </section>
     </main>
     <script src="/assets/preview.js"></script>
   </body>

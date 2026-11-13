@@ -22,6 +22,12 @@
       "all_frames": true,
       "match_about_blank": true,
       "match_origin_as_fallback": true
+    },
+    {
+      "matches": ["http://gapi2.unimet.edu.ve/prontopago/cuenta.php"],
+      "js": ["pronto-pago-frame.js"],
+      "run_at": "document_idle",
+      "all_frames": true
     }
   ],
   "content_security_policy": {
